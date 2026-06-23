@@ -7,25 +7,25 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_ref:
-        description: "llama.cpp commit hash, tag, or branch"
+        description: "llama.cpp commit hash, tag, branch, or latest stable release"
         required: false
-        default: "master"
+        default: "latest"
       whisper_ref:
-        description: "whisper.cpp commit hash, tag, or branch"
+        description: "whisper.cpp commit hash, tag, branch, or latest stable release"
         required: false
-        default: "master"
+        default: "latest"
       sd_ref:
-        description: "stable-diffusion.cpp commit hash, tag, or branch"
+        description: "stable-diffusion.cpp commit hash, tag, branch, or latest stable release"
         required: false
-        default: "master"
+        default: "latest"
       ik_llama_ref:
         description: "ik_llama.cpp commit hash, tag, or branch (CUDA only)"
         required: false
         default: "main"
       llama_swap_version:
-        description: "llama-swap version (e.g. v198, latest, main)"
+        description: "llama-swap release (e.g. v198 or latest)"
         required: false
-        default: "main"
+        default: "latest"
       build_cuda:
         description: "Build CUDA image"
         type: boolean
@@ -77,7 +77,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
 
+      - name: Resolve source versions
+        id: versions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          LLAMA_REF: ${{ inputs.llama_cpp_ref || 'latest' }}
+          WHISPER_REF: ${{ inputs.whisper_ref || 'latest' }}
+          SD_REF: ${{ inputs.sd_ref || 'latest' }}
+          IK_LLAMA_REF: ${{ inputs.ik_llama_ref || 'main' }}
+          LS_VERSION: ${{ inputs.llama_swap_version || 'latest' }}
+        run: docker/unified/build-image.sh --${{ matrix.backend }} --resolve-only
+
+      - name: Check for existing stable build
+        id: image
+        env:
+          VERSION_TAG: ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}-${{ steps.versions.outputs.version_id }}
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]] && docker manifest inspect "${VERSION_TAG}" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Stable source versions are unchanged; skipping ${VERSION_TAG}"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Free up disk space
+        if: ${{ steps.image.outputs.build == 'true' }}
         run: |
           echo "Before cleanup:"
           df -h
@@ -93,25 +117,26 @@ jobs:
       # When running locally under act, skip this and reuse the existing
       # llama-swap-builder (which has ccache warm) to avoid exhausting disk.
       - name: Set up Docker Buildx
-        if: ${{ !env.ACT }}
+        if: ${{ steps.image.outputs.build == 'true' && !env.ACT }}
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd #v4.0.0
 
       - name: Log in to GitHub Container Registry
-        if: ${{ !env.ACT }}
+        if: ${{ steps.image.outputs.build == 'true' && !env.ACT }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 #v4.1.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build unified Docker image (${{ matrix.backend }})
+        if: ${{ steps.image.outputs.build == 'true' }}
         env:
-          LLAMA_REF: ${{ inputs.llama_cpp_ref || 'master' }}
-          WHISPER_REF: ${{ inputs.whisper_ref || 'master' }}
-          SD_REF: ${{ inputs.sd_ref || 'master' }}
-          IK_LLAMA_REF: ${{ inputs.ik_llama_ref || 'main' }}
-          LS_VERSION: ${{ inputs.llama_swap_version || 'main' }}
-          DOCKER_IMAGE_TAG: ghcr.io/mostlygeek/llama-swap:unified-${{ matrix.backend }}
+          LLAMA_REF: ${{ steps.versions.outputs.llama_ref }}
+          WHISPER_REF: ${{ steps.versions.outputs.whisper_ref }}
+          SD_REF: ${{ steps.versions.outputs.sd_ref }}
+          IK_LLAMA_REF: ${{ steps.versions.outputs.ik_llama_ref }}
+          LS_VERSION: ${{ steps.versions.outputs.llama_swap_version }}
+          DOCKER_IMAGE_TAG: ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}
           # When running under act, use the local builder that has warm ccache.
           # On GitHub Actions, BUILDX_BUILDER is unset so docker uses the builder
           # created by setup-buildx-action above.
@@ -121,16 +146,19 @@ jobs:
           docker/unified/build-image.sh --${{ matrix.backend }}
 
       - name: Push to GitHub Container Registry
-        if: ${{ !env.ACT && (github.event_name == 'schedule' || inputs.push_to_ghcr == true) }}
+        if: ${{ steps.image.outputs.build == 'true' && !env.ACT && (github.event_name == 'schedule' || inputs.push_to_ghcr == true) }}
+        env:
+          VERSION_ID: ${{ steps.versions.outputs.version_id }}
         run: |
-          BASE_TAG="ghcr.io/mostlygeek/llama-swap:unified-${{ matrix.backend }}"
-          DATE_TAG=$(date -u +%Y-%m-%d)
+          BASE_TAG="ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}"
+          VERSION_TAG="${BASE_TAG}-${VERSION_ID}"
 
           docker push "${BASE_TAG}"
-          docker tag "${BASE_TAG}" "${BASE_TAG}-${DATE_TAG}"
-          docker push "${BASE_TAG}-${DATE_TAG}"
+          docker tag "${BASE_TAG}" "${VERSION_TAG}"
+          docker push "${VERSION_TAG}"
 
           ROOTLESS_TAG="${BASE_TAG}-rootless"
+          ROOTLESS_VERSION_TAG="${VERSION_TAG}-rootless"
           docker push "${ROOTLESS_TAG}"
-          docker tag "${ROOTLESS_TAG}" "${ROOTLESS_TAG}-${DATE_TAG}"
-          docker push "${ROOTLESS_TAG}-${DATE_TAG}"
+          docker tag "${ROOTLESS_TAG}" "${ROOTLESS_VERSION_TAG}"
+          docker push "${ROOTLESS_VERSION_TAG}"

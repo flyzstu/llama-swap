@@ -10,7 +10,7 @@
 #   LLAMA_REF=v1.2.3 ./build-image.sh --cuda             # Pin llama.cpp to a tag
 #   WHISPER_REF=v1.0.0 ./build-image.sh --vulkan         # Pin whisper.cpp to a tag
 #   SD_REF=master ./build-image.sh --cuda                # Pin stable-diffusion.cpp to a branch
-#   LS_VERSION=170 ./build-image.sh --cuda               # Override llama-swap version
+#   LS_VERSION=v170 ./build-image.sh --cuda              # Override llama-swap version
 #   IK_LLAMA_REF=main ./build-image.sh --cuda            # Pin ik_llama.cpp to main branch (CUDA only)
 #
 
@@ -18,6 +18,7 @@ set -euo pipefail
 
 BACKEND=""
 NO_CACHE=false
+RESOLVE_ONLY=false
 
 for arg in "$@"; do
     case $arg in
@@ -30,22 +31,26 @@ for arg in "$@"; do
         --no-cache)
             NO_CACHE=true
             ;;
+        --resolve-only)
+            RESOLVE_ONLY=true
+            ;;
         --help|-h)
-            echo "Usage: ./build-image.sh --cuda|--vulkan [--no-cache]"
+            echo "Usage: ./build-image.sh --cuda|--vulkan [--no-cache] [--resolve-only]"
             echo ""
             echo "Options:"
             echo "  --cuda      Build CUDA image (NVIDIA GPUs)"
             echo "  --vulkan    Build Vulkan image (AMD GPUs and compatible hardware)"
             echo "  --no-cache  Force rebuild without using Docker cache"
+            echo "  --resolve-only  Resolve source versions without building"
             echo "  --help, -h  Show this help message"
             echo ""
             echo "Environment variables:"
             echo "  DOCKER_IMAGE_TAG     Set custom image tag (default: llama-swap:unified-cuda or llama-swap:unified-vulkan)"
-            echo "  LLAMA_REF            Pin llama.cpp to a commit, tag, or branch"
-            echo "  WHISPER_REF          Pin whisper.cpp to a commit, tag, or branch"
-            echo "  SD_REF               Pin stable-diffusion.cpp to a commit, tag, or branch"
+            echo "  LLAMA_REF            Pin llama.cpp to a commit, tag, or branch (default: latest release)"
+            echo "  WHISPER_REF          Pin whisper.cpp to a commit, tag, or branch (default: latest release)"
+            echo "  SD_REF               Pin stable-diffusion.cpp to a commit, tag, or branch (default: latest release)"
             echo "  IK_LLAMA_REF         Pin ik_llama.cpp to a commit, tag, or branch (CUDA only)"
-            echo "  LS_VERSION           Override llama-swap version (e.g., '170' or 'latest')"
+            echo "  LS_VERSION           Override llama-swap version (default: latest release)"
             exit 0
             ;;
     esac
@@ -66,6 +71,20 @@ WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
 SD_REPO="https://github.com/leejet/stable-diffusion.cpp.git"
 LLAMA_SWAP_REPO="https://github.com/mostlygeek/llama-swap.git"
 IK_LLAMA_REPO="https://github.com/ikawrakow/ik_llama.cpp.git"
+
+# Return the tag for the latest non-draft, non-prerelease GitHub release.
+get_latest_release_tag() {
+    local repo="$1"
+    local auth_args=()
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        auth_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+
+    curl -fsSL "${auth_args[@]}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repo}/releases/latest" |
+        jq -er '.tag_name'
+}
 
 # Resolve a git ref (commit hash, tag, or branch) to a full commit hash.
 # Requires only: git, network access to the remote.
@@ -106,9 +125,19 @@ resolve_ref() {
     return 1
 }
 
-# Resolve HEAD of a repo without needing to know the default branch name.
-get_latest_hash() {
-    git ls-remote "${1}" HEAD 2>/dev/null | head -1 | cut -f1
+resolve_stable_release() {
+    local repo_slug="$1"
+    local repo_url="$2"
+    local requested_ref="$3"
+    local resolved_ref="${requested_ref}"
+
+    if [[ "${resolved_ref}" == "latest" ]]; then
+        resolved_ref=$(get_latest_release_tag "${repo_slug}") || return 1
+    fi
+
+    local hash
+    hash=$(resolve_ref "${repo_url}" "${resolved_ref}") || return 1
+    printf '%s %s\n' "${resolved_ref}" "${hash}"
 }
 
 echo "=========================================="
@@ -116,74 +145,61 @@ echo "llama-swap Unified Build (${BACKEND})"
 echo "=========================================="
 echo ""
 
-# Resolve llama.cpp ref
-if [[ -n "${LLAMA_REF:-}" ]]; then
-    LLAMA_HASH=$(resolve_ref "${LLAMA_REPO}" "${LLAMA_REF}") || exit 1
-    echo "llama.cpp: ${LLAMA_REF} -> ${LLAMA_HASH}"
-else
-    LLAMA_HASH=$(get_latest_hash "${LLAMA_REPO}")
-    if [[ -z "${LLAMA_HASH}" ]]; then
-        echo "ERROR: Could not determine latest commit for llama.cpp" >&2
-        exit 1
-    fi
-    echo "llama.cpp: latest HEAD: ${LLAMA_HASH}"
-fi
+# Resolve stable releases by default. Explicit refs still allow local and
+# manually dispatched builds to pin a branch, tag, or commit.
+resolved=$(resolve_stable_release "ggml-org/llama.cpp" "${LLAMA_REPO}" "${LLAMA_REF:-latest}")
+read -r LLAMA_VERSION LLAMA_HASH <<<"${resolved}"
+echo "llama.cpp: ${LLAMA_VERSION} -> ${LLAMA_HASH}"
 
-# Resolve whisper.cpp ref
-if [[ -n "${WHISPER_REF:-}" ]]; then
-    WHISPER_HASH=$(resolve_ref "${WHISPER_REPO}" "${WHISPER_REF}") || exit 1
-    echo "whisper.cpp: ${WHISPER_REF} -> ${WHISPER_HASH}"
-else
-    WHISPER_HASH=$(get_latest_hash "${WHISPER_REPO}")
-    if [[ -z "${WHISPER_HASH}" ]]; then
-        echo "ERROR: Could not determine latest commit for whisper.cpp" >&2
-        exit 1
-    fi
-    echo "whisper.cpp: latest HEAD: ${WHISPER_HASH}"
-fi
+resolved=$(resolve_stable_release "ggml-org/whisper.cpp" "${WHISPER_REPO}" "${WHISPER_REF:-latest}")
+read -r WHISPER_VERSION WHISPER_HASH <<<"${resolved}"
+echo "whisper.cpp: ${WHISPER_VERSION} -> ${WHISPER_HASH}"
 
-# Resolve stable-diffusion.cpp ref
-if [[ -n "${SD_REF:-}" ]]; then
-    SD_HASH=$(resolve_ref "${SD_REPO}" "${SD_REF}") || exit 1
-    echo "stable-diffusion.cpp: ${SD_REF} -> ${SD_HASH}"
-else
-    SD_HASH=$(get_latest_hash "${SD_REPO}")
-    if [[ -z "${SD_HASH}" ]]; then
-        echo "ERROR: Could not determine latest commit for stable-diffusion.cpp" >&2
-        exit 1
-    fi
-    echo "stable-diffusion.cpp: latest HEAD: ${SD_HASH}"
-fi
+resolved=$(resolve_stable_release "leejet/stable-diffusion.cpp" "${SD_REPO}" "${SD_REF:-latest}")
+read -r SD_VERSION SD_HASH <<<"${resolved}"
+echo "stable-diffusion.cpp: ${SD_VERSION} -> ${SD_HASH}"
 
 # Resolve ik_llama.cpp ref (CUDA only)
 if [[ "$BACKEND" == "cuda" ]]; then
-    if [[ -n "${IK_LLAMA_REF:-}" ]]; then
-        IK_LLAMA_HASH=$(resolve_ref "${IK_LLAMA_REPO}" "${IK_LLAMA_REF}") || exit 1
-        echo "ik_llama.cpp: ${IK_LLAMA_REF} -> ${IK_LLAMA_HASH}"
-    else
-        IK_LLAMA_HASH=$(get_latest_hash "${IK_LLAMA_REPO}")
-        if [[ -z "${IK_LLAMA_HASH}" ]]; then
-            echo "ERROR: Could not determine latest commit for ik_llama.cpp" >&2
-            exit 1
-        fi
-        echo "ik_llama.cpp: latest HEAD: ${IK_LLAMA_HASH}"
-    fi
+    IK_LLAMA_VERSION="${IK_LLAMA_REF:-main}"
+    IK_LLAMA_HASH=$(resolve_ref "${IK_LLAMA_REPO}" "${IK_LLAMA_VERSION}") || exit 1
+    echo "ik_llama.cpp: ${IK_LLAMA_VERSION} -> ${IK_LLAMA_HASH}"
 else
+    IK_LLAMA_VERSION="n/a"
     IK_LLAMA_HASH="n/a"
     echo "ik_llama.cpp: skipped (vulkan build)"
 fi
 
-# Resolve llama-swap ref
-if [[ -n "${LS_VERSION:-}" ]]; then
-    LS_HASH=$(resolve_ref "${LLAMA_SWAP_REPO}" "${LS_VERSION}") || exit 1
-    echo "llama-swap: ${LS_VERSION} -> ${LS_HASH}"
-else
-    LS_HASH=$(get_latest_hash "${LLAMA_SWAP_REPO}")
-    if [[ -z "${LS_HASH}" ]]; then
-        echo "ERROR: Could not determine latest commit for llama-swap" >&2
-        exit 1
-    fi
-    echo "llama-swap: latest HEAD: ${LS_HASH}"
+resolved=$(resolve_stable_release "mostlygeek/llama-swap" "${LLAMA_SWAP_REPO}" "${LS_VERSION:-latest}")
+read -r LS_RELEASE LS_HASH <<<"${resolved}"
+echo "llama-swap: ${LS_RELEASE} -> ${LS_HASH}"
+
+VERSION_ID=$(
+    printf '%s\n' \
+        "${BACKEND}" \
+        "${LLAMA_HASH}" \
+        "${WHISPER_HASH}" \
+        "${SD_HASH}" \
+        "${IK_LLAMA_HASH}" \
+        "${LS_HASH}" |
+        sha256sum |
+        cut -c1-16
+)
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    {
+        echo "version_id=${VERSION_ID}"
+        echo "llama_ref=${LLAMA_HASH}"
+        echo "whisper_ref=${WHISPER_HASH}"
+        echo "sd_ref=${SD_HASH}"
+        echo "ik_llama_ref=${IK_LLAMA_HASH}"
+        echo "llama_swap_version=${LS_RELEASE}"
+    } >>"${GITHUB_OUTPUT}"
+fi
+
+if [[ "${RESOLVE_ONLY}" == true ]]; then
+    echo "version ID: ${VERSION_ID}"
+    exit 0
 fi
 
 echo ""
@@ -200,7 +216,7 @@ BUILD_ARGS=(
     --build-arg "WHISPER_COMMIT_HASH=${WHISPER_HASH}"
     --build-arg "SD_COMMIT_HASH=${SD_HASH}"
     --build-arg "IK_LLAMA_COMMIT_HASH=${IK_LLAMA_HASH}"
-    --build-arg "LS_VERSION=${LS_HASH}"
+    --build-arg "LS_VERSION=${LS_RELEASE}"
     -t "${DOCKER_IMAGE_TAG}"
     -f "${SCRIPT_DIR}/Dockerfile"
 )
@@ -209,7 +225,7 @@ if [[ "$NO_CACHE" == true ]]; then
     BUILD_ARGS+=(--no-cache)
     echo "Note: Building without cache"
 elif [[ "${GITHUB_ACTIONS:-}" == "true" && "${ACT:-}" != "true" ]]; then
-    CACHE_REF="ghcr.io/mostlygeek/llama-swap:unified-${BACKEND}-cache"
+    CACHE_REF="ghcr.io/flyzstu/llama-swap:unified-${BACKEND}-cache"
     BUILD_ARGS+=(
         --cache-from "type=registry,ref=${CACHE_REF}"
         --cache-to "type=registry,ref=${CACHE_REF},mode=max"

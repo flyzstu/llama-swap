@@ -1,154 +1,180 @@
-![llama-swap header image](docs/assets/hero3.webp)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/mostlygeek/llama-swap/go-ci.yml)
-![GitHub Repo stars](https://img.shields.io/github/stars/mostlygeek/llama-swap)
+![llama-swap 头图](docs/assets/hero3.webp)
+![GitHub 下载量](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
+![GitHub Actions 状态](https://img.shields.io/github/actions/workflow/status/flyzstu/llama-swap/go-ci.yml)
+![GitHub Stars](https://img.shields.io/github/stars/flyzstu/llama-swap)
 
 # llama-swap
 
-Run multiple generative AI models on your machine and hot-swap between them on demand. llama-swap works with any OpenAI and Anthropic API compatible server and is used by thousands of people to power their local AI workflows.
+在一台机器上运行多个生成式 AI 模型，并按需在它们之间热切换。llama-swap 可以配合任何兼容 OpenAI 或 Anthropic API 的服务使用，为本地 AI 工作流提供统一入口。
 
-Built in Go for performance and simplicity, llama-swap has zero dependencies and is incredibly easy to set up. Get started in minutes - just one binary and one configuration file.
+llama-swap 使用 Go 编写，注重性能和简单性。程序没有外部运行时依赖，只需要一个二进制文件和一个配置文件即可启动。
 
-## Features:
+## 功能
 
-- ✅ Easy to deploy and configure: one binary, one configuration file. no external dependencies
-- ✅ On-demand model switching
-- ✅ Use any local OpenAI compatible server (llama.cpp, vllm, tabbyAPI, stable-diffusion.cpp, etc.)
-  - future proof, upgrade your inference servers at any time.
-- ✅ OpenAI API supported endpoints:
+- ✅ 部署和配置简单：一个二进制文件、一个配置文件，无外部依赖
+- ✅ 按需切换模型
+- ✅ 支持任意兼容 OpenAI API 的本地服务，例如 llama.cpp、vLLM、tabbyAPI 和 stable-diffusion.cpp
+- ✅ 支持以下 OpenAI API 端点：
   - `v1/completions`
   - `v1/chat/completions`
   - `v1/responses`
   - `v1/embeddings`
-  - `v1/models` - list available models
-  - `v1/audio/speech` ([#36](https://github.com/mostlygeek/llama-swap/issues/36))
-  - `v1/audio/transcriptions` ([docs](https://github.com/mostlygeek/llama-swap/issues/41#issuecomment-2722637867))
+  - `v1/models`：列出可用模型
+  - `v1/audio/speech`（[#36](https://github.com/mostlygeek/llama-swap/issues/36)）
+  - `v1/audio/transcriptions`（[说明](https://github.com/mostlygeek/llama-swap/issues/41#issuecomment-2722637867)）
   - `v1/audio/voices`
   - `v1/images/generations`
   - `v1/images/edits`
-- ✅ Anthropic API supported endpoints:
+- ✅ 支持以下 Anthropic API 端点：
   - `v1/messages`
   - `v1/messages/count_tokens`
-- ✅ llama-server (llama.cpp) supported endpoints
-  - `v1/rerank`, `v1/reranking`, `/rerank`
-  - `/infill` - for code infilling
-  - `/completion` - for completion endpoint
-- ✅ SDAPI via [stable-diffusion.cpp's server](https://github.com/leejet/stable-diffusion.cpp/tree/master/examples/server)
+- ✅ 支持 llama-server（llama.cpp）端点：
+  - `v1/rerank`、`v1/reranking`、`/rerank`
+  - `/infill`：代码补全
+  - `/completion`：文本补全
+- ✅ 通过 [stable-diffusion.cpp server](https://github.com/leejet/stable-diffusion.cpp/tree/master/examples/server) 支持 SDAPI：
   - `/sdapi/v1/txt2img`
   - `/sdapi/v1/img2img`
-  - `/sdapi/v1/loras` - requires `model` in request body to fetch the correct loras
-- ✅ llama-swap API
-  - `/ui` - web UI
-  - `/upstream/:model_id` - direct access to upstream server ([demo](https://github.com/mostlygeek/llama-swap/pull/31))
-  - `/running` - list currently running models ([#61](https://github.com/mostlygeek/llama-swap/issues/61))
-  - `POST /api/models/unload` - manually unload all running models ([#58](https://github.com/mostlygeek/llama-swap/issues/58))
-  - `POST /api/models/unload/:model_id` - unload a specific model
-  - `/logs` - remote log monitoring
-    - `GET /logs` returns buffered plain text logs.
-      - If `Accept: text/html` is sent, `/logs` redirects to `/ui/`.
-    - `GET /logs/stream` keeps the connection open for live log streaming.
-      - Stream endpoints send buffered history first by default; add `?no-history` to stream only new lines.
-    - `GET /logs/stream/proxy` streams proxy logs only.
-    - `GET /logs/stream/upstream` streams upstream process logs only.
-    - `GET /logs/stream/{model_id}` streams logs for one model (including IDs with slashes, like `author/model`).
-  - `/health` - just returns "OK"
-  - `/metrics` - system and GPU metrics for prometheus
-- ✅ API Key support - define keys to restrict access to API endpoints
-- ✅ Customizable
-  - Run concurrent models with a custom DSL swap matrix ([#643](https://github.com/mostlygeek/llama-swap/issues/643))
-  - Automatic unloading of models after timeout by setting a `ttl`
-  - Docker and Podman support using `cmd` and `cmdStop` together
-  - Preload models on startup with `hooks` ([#235](https://github.com/mostlygeek/llama-swap/pull/235))
-  - Apply filters to requests to control inference with `stripParams`, `setParams` and `setParamsByID`
+  - `/sdapi/v1/loras`：请求体中需要包含 `model`，以获取正确的 LoRA
+- ✅ llama-swap API：
+  - `/ui`：Web UI
+  - `/upstream/:model_id`：直接访问上游服务（[示例](https://github.com/mostlygeek/llama-swap/pull/31)）
+  - `/running`：列出当前运行的模型（[#61](https://github.com/mostlygeek/llama-swap/issues/61)）
+  - `POST /api/models/unload`：手动卸载所有运行中的模型（[#58](https://github.com/mostlygeek/llama-swap/issues/58)）
+  - `POST /api/models/unload/:model_id`：卸载指定模型
+  - `/logs`：远程日志监控
+    - `GET /logs` 返回缓冲区内的纯文本日志
+    - 使用 `Accept: text/html` 请求时，`/logs` 会重定向到 `/ui/`
+    - `GET /logs/stream` 保持连接并实时输出日志
+    - 流式端点默认先发送历史日志；添加 `?no-history` 后仅发送新日志
+    - `GET /logs/stream/proxy` 仅输出代理日志
+    - `GET /logs/stream/upstream` 仅输出上游进程日志
+    - `GET /logs/stream/{model_id}` 输出指定模型的日志，支持 `author/model` 形式的 ID
+  - `/health`：返回 `OK`
+  - `/metrics`：提供 Prometheus 格式的系统和 GPU 指标
+- ✅ 支持 API Key，可限制 API 端点访问
+- ✅ 可扩展配置：
+  - 使用自定义 DSL 交换矩阵并发运行模型（[#643](https://github.com/mostlygeek/llama-swap/issues/643)）
+  - 通过 `ttl` 在超时后自动卸载模型
+  - 组合使用 `cmd` 和 `cmdStop` 管理 Docker 或 Podman 容器
+  - 通过 `hooks` 在启动时预加载模型（[#235](https://github.com/mostlygeek/llama-swap/pull/235)）
+  - 使用 `stripParams`、`setParams` 和 `setParamsByID` 过滤或修改请求
 
 ### Web UI
 
-llama-swap includes a real time web interface with a playground for testing out all sorts of local models:
+llama-swap 提供实时 Web 界面和 Playground，可用于测试不同类型的本地模型。
 
-<img width="1125" height="876" alt="image" src="https://github.com/user-attachments/assets/8ee41947-97af-463d-b0f0-8e9c478fac07" />
+模型交互：
 
-View detailed token metrics:
+<img width="1125" height="876" alt="模型交互界面" src="https://github.com/user-attachments/assets/8ee41947-97af-463d-b0f0-8e9c478fac07" />
 
-<img width="1111" height="515" alt="image" src="https://github.com/user-attachments/assets/64bfb280-d7a3-4126-971a-a128fd40410c" />
+Token 指标：
 
-Inspect request and responses:
+<img width="1111" height="515" alt="Token 指标界面" src="https://github.com/user-attachments/assets/64bfb280-d7a3-4126-971a-a128fd40410c" />
 
-<img width="1111" height="720" alt="image" src="https://github.com/user-attachments/assets/24fe4aca-1448-4d7c-b9e8-a967589bda6c" />
+请求和响应检查：
 
-Manually load and unload models:
+<img width="1111" height="720" alt="请求和响应界面" src="https://github.com/user-attachments/assets/24fe4aca-1448-4d7c-b9e8-a967589bda6c" />
 
-<img width="1109" height="719" alt="image" src="https://github.com/user-attachments/assets/02b1e1f2-abd0-4050-84ae-facd66ff01c4" />
+手动加载和卸载模型：
 
-Real time log streaming:
+<img width="1109" height="719" alt="模型管理界面" src="https://github.com/user-attachments/assets/02b1e1f2-abd0-4050-84ae-facd66ff01c4" />
 
-<img width="1107" height="559" alt="image" src="https://github.com/user-attachments/assets/39669a10-cff2-409e-836a-5bad8bd0140c" />
+实时日志：
 
-## Installation
+<img width="1107" height="559" alt="实时日志界面" src="https://github.com/user-attachments/assets/39669a10-cff2-409e-836a-5bad8bd0140c" />
 
-llama-swap can be installed in multiple ways
+## 安装
+
+支持以下安装方式：
 
 1. Docker
-2. Homebrew (macOS and Linux)
-3. MacPorts (macOS)
-4. WinGet
-5. From release binaries
-6. From source
+2. Homebrew（macOS 和 Linux）
+3. MacPorts（macOS）
+4. WinGet（Windows）
+5. 预编译二进制文件
+6. 源码构建
 
-### Docker Install ([download images](https://github.com/mostlygeek/llama-swap/pkgs/container/llama-swap))
+### Docker
 
-Two types of container images are built nightly for llama-swap:
+#### 统一镜像（推荐）
 
-1. A unified container with llama-server, ik-llama-server, stable-diffusion.cpp, whisper.cpp and llama-swap built from source. This is only available for cuda and vulkan but has more capabilities. This one is recommended for use.
-2. A legacy image that is based on llama.cpp's images and llama-swap copied into the container. Use this one if you prefer to stay close to llama.cpp's container images.
+统一镜像包含以下组件：
 
-#### Unified container (Recommended)
+- `llama-server`：使用 llama.cpp 最新正式稳定版
+- `ik-llama-server`：使用 `ik_llama.cpp/main`，因为该项目目前没有正式稳定版
+- `stable-diffusion.cpp`：使用最新正式稳定版
+- `whisper.cpp`：使用最新正式稳定版
+- `llama-swap`：使用最新正式稳定版
 
-```shell
-$ docker pull ghcr.io/mostlygeek/llama-swap:unified-cuda
+GitHub Actions 每天检查一次各组件版本，但不会每天拉取默认分支并重复构建。只有上述任一源码提交发生变化时，才会重新构建并推送镜像。
 
-# run with a custom configuration and models directory
-$ docker run -it --rm --runtime nvidia -p 9292:8080 \
- -v /path/to/models:/models \
- -v /path/to/custom/config.yaml:/etc/llama-swap/config/config.yaml \
- ghcr.io/mostlygeek/llama-swap:unified-cuda
+镜像发布到：
+
+```text
+ghcr.io/flyzstu/llama-swap
 ```
 
-#### Legacy container
+CUDA 镜像：
 
 ```shell
-$ docker pull ghcr.io/mostlygeek/llama-swap:cuda
+docker pull ghcr.io/flyzstu/llama-swap:unified-cuda
 
-# run with a custom configuration and models directory
-$ docker run -it --rm --runtime nvidia -p 9292:8080 \
- -v /path/to/models:/models \
- -v /path/to/custom/config.yaml:/app/config.yaml \
- ghcr.io/mostlygeek/llama-swap:cuda
+docker run -it --rm --runtime nvidia -p 9292:8080 \
+  -v /path/to/models:/models \
+  -v /path/to/custom/config.yaml:/etc/llama-swap/config/config.yaml \
+  ghcr.io/flyzstu/llama-swap:unified-cuda
 ```
 
-<details>
-<summary>
-more examples
-</summary>
+Vulkan 镜像：
 
 ```shell
-# pull latest images per platform
-docker pull ghcr.io/mostlygeek/llama-swap:cpu
-docker pull ghcr.io/mostlygeek/llama-swap:cuda
-docker pull ghcr.io/mostlygeek/llama-swap:vulkan
-docker pull ghcr.io/mostlygeek/llama-swap:intel
-docker pull ghcr.io/mostlygeek/llama-swap:musa
+docker pull ghcr.io/flyzstu/llama-swap:unified-vulkan
 
-# tagged llama-swap, platform and llama-server version images
-docker pull ghcr.io/mostlygeek/llama-swap:v166-cuda-b6795
-
-# non-root cuda
-docker pull ghcr.io/mostlygeek/llama-swap:cuda-non-root
-
+docker run -it --rm --device /dev/dri:/dev/dri -p 9292:8080 \
+  -v /path/to/models:/models \
+  -v /path/to/custom/config.yaml:/etc/llama-swap/config/config.yaml \
+  ghcr.io/flyzstu/llama-swap:unified-vulkan
 ```
 
-</details>
+无 root 用户镜像：
 
-### Homebrew Install (macOS/Linux)
+```shell
+docker pull ghcr.io/flyzstu/llama-swap:unified-cuda-rootless
+docker pull ghcr.io/flyzstu/llama-swap:unified-vulkan-rootless
+```
+
+#### 镜像 Tag
+
+每次发布会推送滚动 tag 和不可变的版本组合 tag：
+
+```text
+unified-cuda
+unified-cuda-rootless
+unified-cuda-<版本组合哈希>
+unified-cuda-<版本组合哈希>-rootless
+
+unified-vulkan
+unified-vulkan-rootless
+unified-vulkan-<版本组合哈希>
+unified-vulkan-<版本组合哈希>-rootless
+```
+
+版本组合哈希由后端类型和各组件的源码提交 SHA 生成。定时任务发现对应版本组合 tag 已存在时，会跳过构建和推送。
+
+#### GHCR 权限
+
+工作流默认使用 GitHub Actions 自动提供的 `GITHUB_TOKEN`，仓库工作流已配置 `packages: write` 权限。通常不需要手动提供 token。
+
+如果仓库或 GHCR 包权限配置导致 `GITHUB_TOKEN` 无法推送，可以创建具有 `write:packages` 权限的 Personal Access Token，并将其保存为仓库 Secret：
+
+```text
+GHCR_TOKEN
+```
+
+工作流会优先使用 `GHCR_TOKEN`，未配置时回退到 `GITHUB_TOKEN`。
+
+### Homebrew（macOS/Linux）
 
 ```shell
 brew tap mostlygeek/llama-swap
@@ -156,95 +182,106 @@ brew install llama-swap
 llama-swap --config path/to/config.yaml --listen localhost:8080
 ```
 
-### MacPorts (macOS)
+### MacPorts（macOS）
 
 > [!NOTE]
-> Maintained by MacPorts community - [llama-swap port](https://ports.macports.org/port/llama-swap). It is not an official part of llama-swap.
+> 该软件包由 MacPorts 社区维护，参见 [llama-swap port](https://ports.macports.org/port/llama-swap)，不属于 llama-swap 官方发布内容。
 
 ```shell
 sudo port install llama-swap
 llama-swap --config path/to/config.yaml --listen localhost:8080
 ```
 
-### WinGet Install (Windows)
+### WinGet（Windows）
 
 > [!NOTE]
-> WinGet is maintained by community contributor [Dvd-Znf](https://github.com/Dvd-Znf) ([#327](https://github.com/mostlygeek/llama-swap/issues/327)). It is not an official part of llama-swap.
+> WinGet 软件包由社区贡献者 [Dvd-Znf](https://github.com/Dvd-Znf) 维护（[#327](https://github.com/mostlygeek/llama-swap/issues/327)），不属于 llama-swap 官方发布内容。
 
 ```shell
-# install
+# 安装
 C:\> winget install llama-swap
 
-# upgrade
+# 升级
 C:\> winget upgrade llama-swap
 ```
 
-### Pre-built Binaries
+### 预编译二进制文件
 
-Binaries are available on the [release](https://github.com/mostlygeek/llama-swap/releases) page for Linux, Mac, Windows and FreeBSD.
+Linux、macOS、Windows 和 FreeBSD 的二进制文件可从上游 [Releases](https://github.com/mostlygeek/llama-swap/releases) 页面下载。
 
-### Building from source
+### 从源码构建
 
-1. Building requires Go and Node.js (for UI).
-1. `git clone https://github.com/mostlygeek/llama-swap.git`
-1. `make clean all`
-1. look in the `build/` subdirectory for the llama-swap binary
+1. 安装 Go 和 Node.js，Node.js 用于构建 UI。
+2. 克隆代码：
 
-## Configuration
+   ```shell
+   git clone https://github.com/flyzstu/llama-swap.git
+   cd llama-swap
+   ```
+
+3. 构建：
+
+   ```shell
+   make clean all
+   ```
+
+4. 构建完成后，二进制文件位于 `build/` 目录。
+
+## 配置
+
+最小可用配置：
 
 ```yaml
-# minimum viable config.yaml
-
 models:
   model1:
     cmd: llama-server --port ${PORT} --model /path/to/model.gguf
 ```
 
-That's all you need to get started:
+其中：
 
-1. `models` - holds all model configurations
-2. `model1` - the ID used in API calls
-3. `cmd` - the command to run to start the server.
-4. `${PORT}` - an automatically assigned port number
+1. `models` 保存所有模型配置。
+2. `model1` 是 API 请求中使用的模型 ID。
+3. `cmd` 是启动推理服务的命令。
+4. `${PORT}` 是 llama-swap 自动分配的端口。
 
-Almost all configuration settings are optional and can be added one step at a time:
+大多数配置项都是可选的，可以按需逐步添加：
 
-- Advanced features
-  - `matrix` to run concurrent models with a custom swap logic DSL
-  - `hooks` to run things on startup
-  - `macros` reusable snippets
-- Model customization
-  - `ttl` to automatically unload models
-  - `aliases` to use familiar model names (e.g., "gpt-4o-mini")
-  - `env` to pass custom environment variables to inference servers
-  - `cmdStop` gracefully stop Docker/Podman containers
-  - `useModelName` to override model names sent to upstream servers
-  - `${PORT}` automatic port variables for dynamic port assignment
-  - `filters` rewrite parts of requests before sending to the upstream server
+- 高级功能：
+  - `matrix`：使用自定义交换逻辑 DSL 并发运行模型
+  - `hooks`：启动时执行操作
+  - `macros`：定义可复用配置片段
+- 模型配置：
+  - `ttl`：自动卸载超时模型
+  - `aliases`：使用熟悉的模型名称，例如 `gpt-4o-mini`
+  - `env`：向推理服务传递环境变量
+  - `cmdStop`：优雅停止 Docker 或 Podman 容器
+  - `useModelName`：覆盖发送给上游服务的模型名称
+  - `${PORT}`：动态分配端口
+  - `filters`：将请求发送到上游前重写部分内容
 
-See the [configuration documentation](docs/configuration.md) for all options.
+完整选项参见[配置文档](docs/configuration.md)。
 
-## How does llama-swap work?
+## 工作原理
 
-When a request is made to an OpenAI compatible endpoint, llama-swap will extract the `model` value and load the appropriate server configuration to serve it. If the wrong upstream server is running, it will be replaced with the correct one. This is where the "swap" part comes in. The upstream server is automatically swapped to handle the request correctly.
+收到兼容 OpenAI API 的请求后，llama-swap 会读取请求中的 `model` 字段，并加载对应的服务配置。如果当前运行的上游服务与请求模型不匹配，llama-swap 会停止当前服务并启动正确的服务，这就是 “swap” 的含义。
 
-In the most basic configuration llama-swap handles one model at a time. For more advanced use cases, using a `matrix` allows multiple models to be loaded at the same time. You have complete control over how your system resources are used.
+最基础的配置一次只运行一个模型。高级场景可以使用 `matrix` 同时加载多个模型，并精确控制系统资源的使用方式。
 
-## Reverse Proxy Configuration (nginx)
+## nginx 反向代理配置
 
-If you deploy llama-swap behind nginx, disable response buffering for streaming endpoints. By default, nginx buffers responses which breaks Server‑Sent Events (SSE) and streaming chat completion. ([#236](https://github.com/mostlygeek/llama-swap/issues/236))
+如果在 nginx 后面部署 llama-swap，需要为流式端点关闭响应缓冲。nginx 默认缓冲响应，这会影响 Server-Sent Events（SSE）和流式聊天补全（[#236](https://github.com/mostlygeek/llama-swap/issues/236)）。
 
-Recommended nginx configuration snippets:
+推荐配置：
 
 ```nginx
-# SSE for UI events/logs
+# UI 事件和日志使用的 SSE
 location /api/events {
     proxy_pass http://your-llama-swap-backend;
     proxy_buffering off;
     proxy_cache off;
 }
 
-# Streaming chat completions (stream=true)
+# 流式聊天补全（stream=true）
 location /v1/chat/completions {
     proxy_pass http://your-llama-swap-backend;
     proxy_buffering off;
@@ -252,42 +289,42 @@ location /v1/chat/completions {
 }
 ```
 
-As a safeguard, llama-swap also sets `X-Accel-Buffering: no` on SSE responses. However, explicitly disabling `proxy_buffering` at your reverse proxy is still recommended for reliable streaming behavior.
+llama-swap 也会在 SSE 响应中设置 `X-Accel-Buffering: no`，但仍建议在反向代理中显式关闭 `proxy_buffering`。
 
-## Monitoring Logs on the CLI
+## 使用命令行查看日志
 
 ```sh
-# sends up to the last 10KB of logs
-$ curl http://host/logs
+# 返回最多最近 10 KB 的日志
+curl http://host/logs
 
-# streams combined logs
+# 实时输出全部日志
 curl -Ns http://host/logs/stream
 
-# stream llama-swap's proxy status logs
+# 仅输出 llama-swap 代理状态日志
 curl -Ns http://host/logs/stream/proxy
 
-# stream logs from upstream processes that llama-swap loads
+# 仅输出 llama-swap 启动的上游进程日志
 curl -Ns http://host/logs/stream/upstream
 
-# stream logs only from a specific model
+# 仅输出指定模型的日志
 curl -Ns http://host/logs/stream/{model_id}
 
-# stream and filter logs with linux pipes
+# 使用 Linux 管道过滤日志
 curl -Ns http://host/logs/stream | grep 'eval time'
 
-# appending ?no-history will disable sending buffered history first
+# 不先发送缓冲区中的历史日志
 curl -Ns 'http://host/logs/stream?no-history'
 ```
 
-## Do I need to use llama.cpp's server (llama-server)?
+## 是否必须使用 llama-server？
 
-Any OpenAI compatible server would work. llama-swap was originally designed for llama-server and it is the best supported.
+不需要。任何兼容 OpenAI API 的服务都可以使用。llama-swap 最初为 llama-server 设计，因此对它的支持最完整。
 
-For Python based inference servers like vllm or tabbyAPI it is recommended to run them via podman or docker. This provides clean environment isolation as well as responding correctly to `SIGTERM` signals for proper shutdown.
+对于 vLLM、tabbyAPI 等 Python 推理服务，建议通过 Podman 或 Docker 运行。这可以隔离运行环境，并确保服务能正确响应 `SIGTERM` 信号以完成优雅关闭。
 
-## Star History
+## Star 历史
 
 > [!NOTE]
-> Thank you to everyone who has given this project a ⭐️!
+> 感谢所有为本项目点亮 ⭐️ 的用户。
 
-[![Star History Chart](https://api.star-history.com/svg?repos=mostlygeek/llama-swap&type=Date)](https://www.star-history.com/#mostlygeek/llama-swap&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=flyzstu/llama-swap&type=Date)](https://www.star-history.com/#flyzstu/llama-swap&Date)
