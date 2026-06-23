@@ -4,11 +4,10 @@
 #
 # Usage:
 #   ./build-image.sh --cuda                              # Build CUDA image
-#   ./build-image.sh --vulkan                            # Build Vulkan image
 #   ./build-image.sh --cuda --no-cache                   # Build without cache
-#   LLAMA_REF=b1234 ./build-image.sh --vulkan            # Pin llama.cpp to a commit hash
+#   LLAMA_REF=b1234 ./build-image.sh --cuda              # Pin llama.cpp to a commit hash
 #   LLAMA_REF=v1.2.3 ./build-image.sh --cuda             # Pin llama.cpp to a tag
-#   WHISPER_REF=v1.0.0 ./build-image.sh --vulkan         # Pin whisper.cpp to a tag
+#   WHISPER_REF=v1.0.0 ./build-image.sh --cuda           # Pin whisper.cpp to a tag
 #   SD_REF=master ./build-image.sh --cuda                # Pin stable-diffusion.cpp to a branch
 #   LS_VERSION=v170 ./build-image.sh --cuda              # Override llama-swap version
 #   IK_LLAMA_REF=main ./build-image.sh --cuda            # Pin ik_llama.cpp to main branch (CUDA only)
@@ -25,9 +24,6 @@ for arg in "$@"; do
         --cuda)
             BACKEND="cuda"
             ;;
-        --vulkan)
-            BACKEND="vulkan"
-            ;;
         --no-cache)
             NO_CACHE=true
             ;;
@@ -35,17 +31,16 @@ for arg in "$@"; do
             RESOLVE_ONLY=true
             ;;
         --help|-h)
-            echo "Usage: ./build-image.sh --cuda|--vulkan [--no-cache] [--resolve-only]"
+            echo "Usage: ./build-image.sh --cuda [--no-cache] [--resolve-only]"
             echo ""
             echo "Options:"
             echo "  --cuda      Build CUDA image (NVIDIA GPUs)"
-            echo "  --vulkan    Build Vulkan image (AMD GPUs and compatible hardware)"
             echo "  --no-cache  Force rebuild without using Docker cache"
             echo "  --resolve-only  Resolve source versions without building"
             echo "  --help, -h  Show this help message"
             echo ""
             echo "Environment variables:"
-            echo "  DOCKER_IMAGE_TAG     Set custom image tag (default: llama-swap:unified-cuda or llama-swap:unified-vulkan)"
+            echo "  DOCKER_IMAGE_TAG     Set custom image tag (default: llama-swap:unified-cuda)"
             echo "  LLAMA_REF            Pin llama.cpp to a commit, tag, or branch (default: latest release)"
             echo "  WHISPER_REF          Pin whisper.cpp to a commit, tag, or branch (default: latest release)"
             echo "  SD_REF               Pin stable-diffusion.cpp to a commit, tag, or branch (default: latest release)"
@@ -57,9 +52,9 @@ for arg in "$@"; do
 done
 
 if [[ -z "$BACKEND" ]]; then
-    echo "Error: No backend specified. Please use --cuda or --vulkan."
+    echo "Error: No backend specified. Please use --cuda."
     echo ""
-    echo "Usage: ./build-image.sh --cuda|--vulkan [--no-cache]"
+    echo "Usage: ./build-image.sh --cuda [--no-cache]"
     exit 1
 fi
 
@@ -159,16 +154,10 @@ resolved=$(resolve_stable_release "leejet/stable-diffusion.cpp" "${SD_REPO}" "${
 read -r SD_VERSION SD_HASH <<<"${resolved}"
 echo "stable-diffusion.cpp: ${SD_VERSION} -> ${SD_HASH}"
 
-# Resolve ik_llama.cpp ref (CUDA only)
-if [[ "$BACKEND" == "cuda" ]]; then
-    IK_LLAMA_VERSION="${IK_LLAMA_REF:-main}"
-    IK_LLAMA_HASH=$(resolve_ref "${IK_LLAMA_REPO}" "${IK_LLAMA_VERSION}") || exit 1
-    echo "ik_llama.cpp: ${IK_LLAMA_VERSION} -> ${IK_LLAMA_HASH}"
-else
-    IK_LLAMA_VERSION="n/a"
-    IK_LLAMA_HASH="n/a"
-    echo "ik_llama.cpp: skipped (vulkan build)"
-fi
+# Resolve ik_llama.cpp ref.
+IK_LLAMA_VERSION="${IK_LLAMA_REF:-main}"
+IK_LLAMA_HASH=$(resolve_ref "${IK_LLAMA_REPO}" "${IK_LLAMA_VERSION}") || exit 1
+echo "ik_llama.cpp: ${IK_LLAMA_VERSION} -> ${IK_LLAMA_HASH}"
 
 resolved=$(resolve_stable_release "mostlygeek/llama-swap" "${LLAMA_SWAP_REPO}" "${LS_VERSION:-latest}")
 read -r LS_RELEASE LS_HASH <<<"${resolved}"
@@ -242,9 +231,7 @@ echo "=========================================="
 echo ""
 
 EXPECTED_BINARIES=(llama-server llama-cli whisper-server whisper-cli sd-server sd-cli llama-swap)
-if [[ "$BACKEND" == "cuda" ]]; then
-    EXPECTED_BINARIES+=(ik-llama-server)
-fi
+EXPECTED_BINARIES+=(ik-llama-server)
 
 MISSING_BINARIES=()
 for binary in "${EXPECTED_BINARIES[@]}"; do
@@ -265,9 +252,7 @@ if [[ ${#MISSING_BINARIES[@]} -gt 0 ]]; then
 fi
 
 VERIFIED_LIST="llama-server, llama-cli, whisper-server, whisper-cli, sd-server, sd-cli, llama-swap"
-if [[ "$BACKEND" == "cuda" ]]; then
-    VERIFIED_LIST="${VERIFIED_LIST}, ik-llama-server"
-fi
+VERIFIED_LIST="${VERIFIED_LIST}, ik-llama-server"
 echo "All expected binaries verified: ${VERIFIED_LIST}"
 
 echo ""
@@ -277,15 +262,23 @@ echo "=========================================="
 echo ""
 
 ROOTLESS_TAG="${DOCKER_IMAGE_TAG}-rootless"
-docker buildx build --load -t "${ROOTLESS_TAG}" - <<EOF
-FROM ${DOCKER_IMAGE_TAG}
-USER root
-RUN groupadd --system --gid 10001 llama-swap && \\
-    useradd --system --uid 10001 --gid 10001 \\
-      --home /app --shell /sbin/nologin llama-swap && \\
-    chown -R 10001:10001 /etc/llama-swap /models
-USER 10001
-EOF
+ROOTLESS_BUILD_ARGS=(
+    --build-arg "BACKEND=${BACKEND}"
+    --build-arg "LLAMA_COMMIT_HASH=${LLAMA_HASH}"
+    --build-arg "WHISPER_COMMIT_HASH=${WHISPER_HASH}"
+    --build-arg "SD_COMMIT_HASH=${SD_HASH}"
+    --build-arg "IK_LLAMA_COMMIT_HASH=${IK_LLAMA_HASH}"
+    --build-arg "LS_VERSION=${LS_RELEASE}"
+    --build-arg "RUN_UID=10001"
+    -t "${ROOTLESS_TAG}"
+    -f "${SCRIPT_DIR}/Dockerfile"
+)
+if [[ "$NO_CACHE" == true ]]; then
+    ROOTLESS_BUILD_ARGS+=(--no-cache)
+elif [[ "${GITHUB_ACTIONS:-}" == "true" && "${ACT:-}" != "true" ]]; then
+    ROOTLESS_BUILD_ARGS+=(--cache-from "type=registry,ref=${CACHE_REF}")
+fi
+DOCKER_BUILDKIT=1 docker buildx build --load "${ROOTLESS_BUILD_ARGS[@]}" "${SCRIPT_DIR}"
 
 echo "Rootless image built: ${ROOTLESS_TAG}"
 
@@ -307,13 +300,5 @@ if [[ "$BACKEND" == "cuda" ]]; then
 fi
 echo "  llama-swap:           $(docker run --rm --entrypoint cat "${DOCKER_IMAGE_TAG}" /versions.txt | grep llama-swap | cut -d' ' -f2-)"
 echo ""
-if [[ "$BACKEND" == "vulkan" ]]; then
-    echo "Run with:"
-    echo "  docker run -it --rm --device /dev/dri:/dev/dri ${DOCKER_IMAGE_TAG}"
-    echo ""
-    echo "Note: For AMD GPUs, you may also need:"
-    echo "  docker run -it --rm --device /dev/dri:/dev/dri --group-add video ${DOCKER_IMAGE_TAG}"
-else
-    echo "Run with:"
-    echo "  docker run -it --rm --gpus all ${DOCKER_IMAGE_TAG}"
-fi
+echo "Run with:"
+echo "  docker run -it --rm --gpus all ${DOCKER_IMAGE_TAG}"

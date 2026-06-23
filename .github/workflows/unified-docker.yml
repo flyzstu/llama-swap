@@ -31,11 +31,6 @@ on:
         type: boolean
         required: false
         default: true
-      build_vulkan:
-        description: "Build Vulkan image"
-        type: boolean
-        required: false
-        default: true
       push_to_ghcr:
         description: "Push images to ghcr.io"
         type: boolean
@@ -47,32 +42,9 @@ permissions:
   packages: write
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - id: set-matrix
-        run: |
-          backends=()
-          # schedule uses defaults (build both); workflow_dispatch respects inputs
-          if [[ "${{ github.event_name }}" == "schedule" ]] || [[ "${{ inputs.build_cuda }}" == "true" ]]; then
-            backends+=("cuda")
-          fi
-          if [[ "${{ github.event_name }}" == "schedule" ]] || [[ "${{ inputs.build_vulkan }}" == "true" ]]; then
-            backends+=("vulkan")
-          fi
-          matrix=$(printf '%s\n' "${backends[@]}" | jq -R . | jq -sc .)
-          echo "matrix=$matrix" >> $GITHUB_OUTPUT
-
   build:
-    needs: setup
-    if: ${{ needs.setup.outputs.matrix != '[]' }}
+    if: ${{ github.event_name == 'schedule' || inputs.build_cuda == true }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
@@ -86,12 +58,12 @@ jobs:
           SD_REF: ${{ inputs.sd_ref || 'latest' }}
           IK_LLAMA_REF: ${{ inputs.ik_llama_ref || 'main' }}
           LS_VERSION: ${{ inputs.llama_swap_version || 'latest' }}
-        run: docker/unified/build-image.sh --${{ matrix.backend }} --resolve-only
+        run: docker/unified/build-image.sh --cuda --resolve-only
 
       - name: Check for existing stable build
         id: image
         env:
-          VERSION_TAG: ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}-${{ steps.versions.outputs.version_id }}
+          VERSION_TAG: ghcr.io/flyzstu/llama-swap:unified-cuda-${{ steps.versions.outputs.version_id }}
         run: |
           if [[ "${{ github.event_name }}" == "schedule" ]] && docker manifest inspect "${VERSION_TAG}" >/dev/null 2>&1; then
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -128,7 +100,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Build unified Docker image (${{ matrix.backend }})
+      - name: Build unified CUDA Docker image
         if: ${{ steps.image.outputs.build == 'true' }}
         env:
           LLAMA_REF: ${{ steps.versions.outputs.llama_ref }}
@@ -136,21 +108,21 @@ jobs:
           SD_REF: ${{ steps.versions.outputs.sd_ref }}
           IK_LLAMA_REF: ${{ steps.versions.outputs.ik_llama_ref }}
           LS_VERSION: ${{ steps.versions.outputs.llama_swap_version }}
-          DOCKER_IMAGE_TAG: ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}
+          DOCKER_IMAGE_TAG: ghcr.io/flyzstu/llama-swap:unified-cuda
           # When running under act, use the local builder that has warm ccache.
           # On GitHub Actions, BUILDX_BUILDER is unset so docker uses the builder
           # created by setup-buildx-action above.
           BUILDX_BUILDER: ${{ env.ACT == 'true' && 'llama-swap-builder' || '' }}
         run: |
           chmod +x docker/unified/build-image.sh
-          docker/unified/build-image.sh --${{ matrix.backend }}
+          docker/unified/build-image.sh --cuda
 
       - name: Push to GitHub Container Registry
         if: ${{ steps.image.outputs.build == 'true' && !env.ACT && (github.event_name == 'schedule' || inputs.push_to_ghcr == true) }}
         env:
           VERSION_ID: ${{ steps.versions.outputs.version_id }}
         run: |
-          BASE_TAG="ghcr.io/flyzstu/llama-swap:unified-${{ matrix.backend }}"
+          BASE_TAG="ghcr.io/flyzstu/llama-swap:unified-cuda"
           VERSION_TAG="${BASE_TAG}-${VERSION_ID}"
 
           docker push "${BASE_TAG}"

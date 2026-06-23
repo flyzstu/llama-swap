@@ -126,22 +126,10 @@ docker run -it --rm --runtime nvidia -p 9292:8080 \
   ghcr.io/flyzstu/llama-swap:unified-cuda
 ```
 
-Vulkan 镜像：
-
-```shell
-docker pull ghcr.io/flyzstu/llama-swap:unified-vulkan
-
-docker run -it --rm --device /dev/dri:/dev/dri -p 9292:8080 \
-  -v /path/to/models:/models \
-  -v /path/to/custom/config.yaml:/etc/llama-swap/config/config.yaml \
-  ghcr.io/flyzstu/llama-swap:unified-vulkan
-```
-
 无 root 用户镜像：
 
 ```shell
 docker pull ghcr.io/flyzstu/llama-swap:unified-cuda-rootless
-docker pull ghcr.io/flyzstu/llama-swap:unified-vulkan-rootless
 ```
 
 #### 镜像 Tag
@@ -153,11 +141,6 @@ unified-cuda
 unified-cuda-rootless
 unified-cuda-<版本组合哈希>
 unified-cuda-<版本组合哈希>-rootless
-
-unified-vulkan
-unified-vulkan-rootless
-unified-vulkan-<版本组合哈希>
-unified-vulkan-<版本组合哈希>-rootless
 ```
 
 版本组合哈希由后端类型和各组件的源码提交 SHA 生成。定时任务发现对应版本组合 tag 已存在时，会跳过构建和推送。

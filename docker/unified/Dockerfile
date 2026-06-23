@@ -1,9 +1,8 @@
 # Unified multi-stage Dockerfile for AI inference tools
-# Supports CUDA and Vulkan backends via BACKEND build arg
+# CUDA unified image
 #
 # Usage:
 #   docker buildx build --build-arg BACKEND=cuda -t llama-swap:unified-cuda .
-#   docker buildx build --build-arg BACKEND=vulkan -t llama-swap:unified-vulkan .
 #   docker buildx build --build-arg BACKEND=cuda --build-arg CMAKE_CUDA_ARCHITECTURES="86;89" -t llama-swap:unified-cuda .
 #
 # Each project has its own install script that handles cloning, building,
@@ -29,27 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# ──
-
-FROM ubuntu:24.04 AS builder-base-vulkan
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CCACHE_DIR=/ccache
-ENV CCACHE_MAXSIZE=2G
-ENV PATH="/usr/lib/ccache:${PATH}"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git python3 python3-pip libssl-dev \
-    curl ca-certificates ccache make wget software-properties-common \
-    libvulkan-dev glslang-tools spirv-tools vulkan-validationlayers glslc \
-    spirv-headers \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# ── Select builder base by BACKEND ────────────────────────────────────
-
-FROM builder-base-${BACKEND} AS builder-base
+FROM builder-base-cuda AS builder-base
 
 # ── Build whisper.cpp (fastest build, run first) ──────────────────────
 
@@ -81,26 +60,14 @@ RUN --mount=type=cache,id=ccache-${BACKEND},target=/ccache \
     --mount=type=cache,id=llama-${BACKEND},target=/src/llama.cpp/build \
     BACKEND=${BACKEND} bash /build/install-llama.sh "${LLAMA_COMMIT_HASH}"
 
-# ── Build ik_llama.cpp (CUDA only) ────────────────────────────────────
-#
-# Two named stages allow ARG BACKEND to select at build time:
-#   - ik-llama-cuda  : real build (from builder-base-cuda)
-#   - ik-llama-vulkan: no-op (empty /install/bin, skips CUDA pull entirely)
-# BuildKit only evaluates the selected branch, so vulkan builds never
-# pull nvidia/cuda:*-devel or compile ik_llama.cpp.
+# ── Build ik_llama.cpp ────────────────────────────────────────────────
 
-FROM builder-base-vulkan AS ik-llama-vulkan
-RUN mkdir -p /install/bin
-
-FROM builder-base-cuda AS ik-llama-cuda
+FROM builder-base-cuda AS ik-llama-build
 ARG IK_LLAMA_COMMIT_HASH=main
 COPY install-ik-llama.sh /build/
 RUN --mount=type=cache,id=ccache-cuda,target=/ccache \
     --mount=type=cache,id=ik-llama-cuda,target=/src/ik_llama.cpp/build \
     bash /build/install-ik-llama.sh "${IK_LLAMA_COMMIT_HASH}"
-
-ARG BACKEND=cuda
-FROM ik-llama-${BACKEND} AS ik-llama-build
 
 # ── Download llama-swap release binary ────────────────────────────────
 
@@ -125,21 +92,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder-base-cuda /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so
 COPY --from=builder-base-cuda /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
-# ──
-
-FROM ubuntu:24.04 AS runtime-vulkan
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH="/usr/local/bin:${PATH}"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 libvulkan1 mesa-vulkan-drivers \
-    python3 curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# ── Select runtime base by BACKEND ────────────────────────────────────
-
-FROM runtime-${BACKEND} AS runtime
+FROM runtime-cuda AS runtime
 
 ARG BACKEND=cuda
 ARG LLAMA_COMMIT_HASH=unknown
@@ -177,7 +130,7 @@ COPY --from=sd-build /install/lib/ /usr/local/lib/
 COPY --from=llama-build /install/bin/llama-server /usr/local/bin/
 COPY --from=llama-build /install/bin/llama-cli /usr/local/bin/
 
-# Copy ik-llama-server (CUDA only; empty copy for vulkan)
+# Copy ik-llama-server
 COPY --from=ik-llama-build /install/bin/ /usr/local/bin/
 
 # Install uv
