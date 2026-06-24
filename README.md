@@ -145,6 +145,39 @@ unified-cuda-<版本组合哈希>-rootless
 
 版本组合哈希由后端类型和各组件的源码提交 SHA 生成。定时任务发现对应版本组合 tag 已存在时，会跳过构建和推送。
 
+#### 本地构建
+
+本地需要安装 Docker、Buildx、Git、curl 和 jq。建议至少准备 16 GB 内存和 40 GB 可用磁盘空间。
+
+```shell
+docker/unified/build-local.sh
+```
+
+脚本会创建并复用名为 `llama-swap-local` 的 Buildx builder，同时生成滚动 tag、版本组合 tag 及其 rootless 版本。
+
+构建并推送到 GHCR：
+
+```shell
+docker login ghcr.io
+docker/unified/build-local.sh --push
+```
+
+忽略现有缓存进行完整重建：
+
+```shell
+docker/unified/build-local.sh --no-cache
+```
+
+如果只需要支持特定 NVIDIA GPU，可以指定其 Compute Capability，显著缩短首次 CUDA 编译时间。例如仅构建 Ada（RTX 40 系列）：
+
+```shell
+docker/unified/build-local.sh --cuda-architectures 89
+```
+
+多个架构使用分号分隔，例如 `--cuda-architectures '86;89'`。默认值为兼容性更广但构建更慢的 `60;61;75;86;89`。
+
+也可以通过 `--image` 指定其他镜像仓库，或使用 `LLAMA_REF`、`WHISPER_REF`、`SD_REF`、`IK_LLAMA_REF` 和 `LS_VERSION` 覆盖组件版本。
+
 #### GHCR 权限
 
 工作流默认使用 GitHub Actions 自动提供的 `GITHUB_TOKEN`，仓库工作流已配置 `packages: write` 权限。通常不需要手动提供 token。
