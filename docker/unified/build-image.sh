@@ -201,6 +201,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BUILD_ARGS=(
     --build-arg "BACKEND=${BACKEND}"
+    --build-arg "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES:-60;61;75;86;89}"
     --build-arg "LLAMA_COMMIT_HASH=${LLAMA_HASH}"
     --build-arg "WHISPER_COMMIT_HASH=${WHISPER_HASH}"
     --build-arg "SD_COMMIT_HASH=${SD_HASH}"
@@ -209,6 +210,10 @@ BUILD_ARGS=(
     -t "${DOCKER_IMAGE_TAG}"
     -f "${SCRIPT_DIR}/Dockerfile"
 )
+
+if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+    BUILD_ARGS+=(--builder "${BUILDX_BUILDER}")
+fi
 
 if [[ "$NO_CACHE" == true ]]; then
     BUILD_ARGS+=(--no-cache)
@@ -264,6 +269,7 @@ echo ""
 ROOTLESS_TAG="${DOCKER_IMAGE_TAG}-rootless"
 ROOTLESS_BUILD_ARGS=(
     --build-arg "BACKEND=${BACKEND}"
+    --build-arg "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES:-60;61;75;86;89}"
     --build-arg "LLAMA_COMMIT_HASH=${LLAMA_HASH}"
     --build-arg "WHISPER_COMMIT_HASH=${WHISPER_HASH}"
     --build-arg "SD_COMMIT_HASH=${SD_HASH}"
@@ -273,6 +279,9 @@ ROOTLESS_BUILD_ARGS=(
     -t "${ROOTLESS_TAG}"
     -f "${SCRIPT_DIR}/Dockerfile"
 )
+if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+    ROOTLESS_BUILD_ARGS+=(--builder "${BUILDX_BUILDER}")
+fi
 if [[ "$NO_CACHE" == true ]]; then
     ROOTLESS_BUILD_ARGS+=(--no-cache)
 elif [[ "${GITHUB_ACTIONS:-}" == "true" && "${ACT:-}" != "true" ]]; then
