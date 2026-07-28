@@ -41,7 +41,7 @@ CMAKE_FLAGS+=(
     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/lib64/stubs -lcuda"
 )
 
-TARGETS=(llama-cli llama-server)
+TARGETS=(llama-cli llama-server llama-tts)
 
 rm -rf build/CMakeCache.txt build/CMakeFiles 2>/dev/null || true
 

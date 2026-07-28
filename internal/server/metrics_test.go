@@ -2,6 +2,7 @@ package server
 
 import (
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 func TestServer_ParseMetrics_ChatCompletions(t *testing.T) {
 	body := `{"usage":{"prompt_tokens":12,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":4}}}`
 	parsed := gjson.Parse(body)
-	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"))
+	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"), parsed.Get("metrics"))
 	if err != nil {
 		t.Fatalf("parseMetrics: %v", err)
 	}
@@ -29,7 +30,7 @@ func TestServer_ParseMetrics_ChatCompletions(t *testing.T) {
 func TestServer_ParseMetrics_Timings(t *testing.T) {
 	body := `{"timings":{"prompt_n":20,"predicted_n":50,"prompt_per_second":100.0,"predicted_per_second":40.0,"prompt_ms":200,"predicted_ms":1250,"cache_n":8}}`
 	parsed := gjson.Parse(body)
-	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"))
+	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"), parsed.Get("metrics"))
 	if err != nil {
 		t.Fatalf("parseMetrics: %v", err)
 	}
@@ -57,6 +58,47 @@ func TestServer_ProcessStreamingResponse(t *testing.T) {
 	}
 }
 
+func TestServer_ProcessStreamingResponse_VLLMMetrics(t *testing.T) {
+	body := []byte(`data: {"id":"chatcmpl-b7a832cea986aea4","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":14,"total_tokens":166,"completion_tokens":152},"metrics":{"time_to_first_token_ms":70,"mean_itl_ms":10,"tokens_per_second":24.116032676555495}}
+
+data: [DONE]
+`)
+	entry, err := processStreamingResponse("m", time.Now(), body)
+	if err != nil {
+		t.Fatalf("processStreamingResponse: %v", err)
+	}
+	if entry.Tokens.InputTokens != 14 || entry.Tokens.OutputTokens != 152 {
+		t.Fatalf("tokens = %+v", entry.Tokens)
+	}
+	if entry.Tokens.CachedTokens != -1 {
+		t.Errorf("CachedTokens = %d, want -1", entry.Tokens.CachedTokens)
+	}
+	if got, want := entry.Tokens.PromptPerSecond, 200.0; math.Abs(got-want) > 1e-9 {
+		t.Errorf("PromptPerSecond = %v, want %v", got, want)
+	}
+	if entry.Tokens.TokensPerSecond != 100 {
+		t.Errorf("TokensPerSecond = %v, want 100", entry.Tokens.TokensPerSecond)
+	}
+}
+
+func TestServer_ParseMetrics_VLLMMetrics(t *testing.T) {
+	body := `{"id":"chatcmpl-abc123","object":"chat.completion","usage":{"prompt_tokens":42,"completion_tokens":128,"total_tokens":170,"prompt_tokens_details":{"cached_tokens":20}},"metrics":{"time_to_first_token_ms":85.2,"generation_time_ms":1240.5,"queue_time_ms":12.3,"mean_itl_ms":9.1,"tokens_per_second":103.2}}`
+	parsed := gjson.Parse(body)
+	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), parsed.Get("timings"), parsed.Get("metrics"))
+	if err != nil {
+		t.Fatalf("parseMetrics: %v", err)
+	}
+	if entry.Tokens.InputTokens != 42 || entry.Tokens.OutputTokens != 128 || entry.Tokens.CachedTokens != 20 {
+		t.Fatalf("tokens = %+v", entry.Tokens)
+	}
+	if got, want := entry.Tokens.PromptPerSecond, float64(42-20)/(85.2/1000); math.Abs(got-want) > 1e-9 {
+		t.Errorf("PromptPerSecond = %v, want %v", got, want)
+	}
+	if got, want := entry.Tokens.TokensPerSecond, 1000/9.1; math.Abs(got-want) > 1e-9 {
+		t.Errorf("TokensPerSecond = %v, want %v", got, want)
+	}
+}
+
 func TestServer_ProcessStreamingResponse_NoData(t *testing.T) {
 	if _, err := processStreamingResponse("m", time.Now(), []byte("data: [DONE]\n\n")); err == nil {
 		t.Fatal("expected error for stream with no usage data")
@@ -64,7 +106,7 @@ func TestServer_ProcessStreamingResponse_NoData(t *testing.T) {
 }
 
 func TestMetricsMonitor_RecordMetadata(t *testing.T) {
-	mm := newMetricsMonitor(nil, 10, 0)
+	mm := newTestMetricsMonitor(t, nil, 10, 0)
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"usage":{}}`))
 	r = r.WithContext(shared.SetContext(r.Context(), shared.ReqContextData{
 		ModelID:  "m",
@@ -78,7 +120,7 @@ func TestMetricsMonitor_RecordMetadata(t *testing.T) {
 
 	mm.record("m", r, copier, 0, nil, nil)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(entries))
 	}
@@ -91,7 +133,7 @@ func TestMetricsMonitor_RecordMetadata(t *testing.T) {
 }
 
 func TestMetricsMonitor_RecordFailedRequestCapture(t *testing.T) {
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 10, 5)
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 5)
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	reqHeaders := map[string]string{"content-type": "application/json"}
 
@@ -104,7 +146,7 @@ func TestMetricsMonitor_RecordFailedRequestCapture(t *testing.T) {
 	reqBody := []byte(`{"model":"m","messages":[]}`)
 	mm.record("m", r, copier, captureAll, reqBody, reqHeaders)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(entries))
 	}
@@ -136,7 +178,7 @@ func TestMetricsMonitor_RecordFailedRequestCapture(t *testing.T) {
 
 func TestMetricsMonitor_RecordFailedRequestStatusFallback(t *testing.T) {
 	// Non-JSON error body: ErrorMsg falls back to the HTTP status text.
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 10, 5)
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 5)
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
 	w := httptest.NewRecorder()
@@ -146,7 +188,7 @@ func TestMetricsMonitor_RecordFailedRequestStatusFallback(t *testing.T) {
 
 	mm.record("m", r, copier, captureAll, nil, nil)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(entries))
 	}
@@ -156,7 +198,7 @@ func TestMetricsMonitor_RecordFailedRequestStatusFallback(t *testing.T) {
 }
 
 func TestMetricsMonitor_RecordFailedRequestCaptureDisabled(t *testing.T) {
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 10, 0) // captures disabled
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 0) // captures disabled
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
 	w := httptest.NewRecorder()
@@ -166,7 +208,7 @@ func TestMetricsMonitor_RecordFailedRequestCaptureDisabled(t *testing.T) {
 
 	mm.record("m", r, copier, captureAll, []byte("req"), nil)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(entries))
 	}
@@ -183,7 +225,7 @@ func TestMetricsMonitor_RecordFailedRequestCaptureDisabled(t *testing.T) {
 }
 
 func TestMetricsMonitor_RecordDecompressionFailureSetsErrorMsg(t *testing.T) {
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 10, 5)
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 5)
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
 	w := httptest.NewRecorder()
@@ -194,7 +236,7 @@ func TestMetricsMonitor_RecordDecompressionFailureSetsErrorMsg(t *testing.T) {
 
 	mm.record("m", r, copier, captureAll, []byte("req"), nil)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d", len(entries))
 	}
@@ -208,7 +250,7 @@ func TestMetricsMonitor_RecordDecompressionFailureSetsErrorMsg(t *testing.T) {
 }
 
 func TestMetricsMonitor_DecodeResponseBody(t *testing.T) {
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 10, 5)
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 10, 5)
 
 	// No Content-Encoding: body returned unchanged.
 	w := httptest.NewRecorder()
@@ -264,7 +306,7 @@ func TestServer_ParseMetrics_Infill(t *testing.T) {
 	if arr := parsed.Array(); len(arr) > 0 {
 		timings = arr[len(arr)-1].Get("timings")
 	}
-	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), timings)
+	entry, err := parseMetrics("m", time.Now(), parsed.Get("usage"), timings, parsed.Get("metrics"))
 	if err != nil {
 		t.Fatalf("parseMetrics: %v", err)
 	}
@@ -277,7 +319,7 @@ func TestServer_ParseMetrics_Infill(t *testing.T) {
 // an /upstream/<model>/v1/audio/speech request uses the path-specific capture
 // mask (headers only) rather than falling back to captureAll.
 func TestServer_MetricsMiddleware_UpstreamAudioCaptureSkipsRespBody(t *testing.T) {
-	mm := newMetricsMonitor(logmon.NewWriter(io.Discard), 100, 5)
+	mm := newTestMetricsMonitor(t, logmon.NewWriter(io.Discard), 100, 5)
 	cfg := config.Config{Models: map[string]config.ModelConfig{"m1": {}}}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +332,7 @@ func TestServer_MetricsMiddleware_UpstreamAudioCaptureSkipsRespBody(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/upstream/m1/v1/audio/speech", strings.NewReader(`{"model":"m1"}`))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	entries := mm.getMetrics()
+	entries := metricsEntries(t, mm)
 	if len(entries) == 0 {
 		t.Fatal("no metrics recorded")
 	}

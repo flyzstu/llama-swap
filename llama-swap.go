@@ -23,6 +23,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/mostlygeek/llama-swap/internal/server"
 	"github.com/mostlygeek/llama-swap/internal/shared"
+	"github.com/mostlygeek/llama-swap/internal/store"
 	"github.com/mostlygeek/llama-swap/internal/watcher"
 )
 
@@ -54,8 +55,16 @@ var logTimeFormats = map[string]string{
 	"stampnano":   time.StampNano,
 }
 
+func configStorePath(cfg config.Config) string {
+	if cfg.Store == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Store.Path)
+}
+
 func main() {
-	flagConfig := flag.String("config", "", "path to config file (required)")
+	flagConfig := flag.String("config", "", "path to config file")
+	flagConfigDir := flag.String("config-dir", "", "directory of *.yml/*.yaml config files (additive to -config)")
 	flagListen := flag.String("listen", "", "listen address (default :8080 or :8443 for TLS)")
 	flagCertFile := flag.String("tls-cert-file", "", "TLS certificate file")
 	flagKeyFile := flag.String("tls-key-file", "", "TLS key file")
@@ -68,8 +77,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *flagConfig == "" {
-		slog.Error("-config is required")
+	if *flagConfig == "" && *flagConfigDir == "" {
+		slog.Error("at least one of -config or -config-dir must be provided")
 		os.Exit(1)
 	}
 
@@ -88,10 +97,9 @@ func main() {
 		}
 	}
 
-	configPath := *flagConfig
-	cfg, err := config.LoadConfig(configPath)
+	cfg, err := config.LoadConfigSources(*flagConfig, *flagConfigDir)
 	if err != nil {
-		slog.Error("failed to load config", "path", configPath, "error", err)
+		slog.Error("failed to load config", "config", *flagConfig, "config-dir", *flagConfigDir, "error", err)
 		os.Exit(1)
 	}
 
@@ -99,10 +107,6 @@ func main() {
 	// owns the combined history served by /logs. They outlive config reloads,
 	// so a LogToStdout change requires a restart to take effect.
 	muxLog, proxyLog, upstreamLog := server.NewLoggers(cfg.LogToStdout)
-
-	if len(cfg.Profiles) > 0 {
-		proxyLog.Warn("Profile functionality has been removed in favor of Groups. See the README for more information.")
-	}
 
 	applyLogSettings := func(cfg config.Config) {
 		level := logmon.LevelInfo
@@ -146,15 +150,25 @@ func main() {
 
 	buildInfo := server.BuildInfo{Version: version, Commit: commit, Date: date}
 
-	initialSrv, err := server.New(cfg, muxLog, proxyLog, upstreamLog, perfMon, buildInfo)
+	initialStorePath := configStorePath(cfg)
+	initialStore, err := store.New(initialStorePath)
+	if err != nil {
+		slog.Error("failed to create store", "error", err)
+		os.Exit(1)
+	}
+
+	initialSrv, err := server.New(cfg, muxLog, proxyLog, upstreamLog, perfMon, initialStore, buildInfo)
 	if err != nil {
 		slog.Error("failed to create server", "error", err)
+		initialStore.Close()
 		os.Exit(1)
 	}
 
 	// activeSrv is swapped atomically during hot reload.
 	var activeMu sync.RWMutex
 	activeSrv := initialSrv
+	activeStore := initialStore
+	activeStorePath := initialStorePath
 
 	httpServer := &http.Server{
 		Addr: listenAddr,
@@ -187,35 +201,58 @@ func main() {
 
 		proxyLog.Info("reloading configuration")
 
-		newCfg, err := config.LoadConfig(configPath)
+		newCfg, err := config.LoadConfigSources(*flagConfig, *flagConfigDir)
 		if err != nil {
 			proxyLog.Warnf("failed to reload config: %v", err)
 			return
-		}
-
-		if len(newCfg.Profiles) > 0 {
-			proxyLog.Warn("Profile functionality has been removed in favor of Groups. See the README for more information.")
 		}
 
 		if perfMon != nil {
 			perfMon.UpdateConfig(newCfg.Performance)
 		}
 
-		newSrv, err := server.New(newCfg, muxLog, proxyLog, upstreamLog, perfMon, buildInfo)
+		newStorePath := configStorePath(newCfg)
+		activeMu.RLock()
+		currentStore := activeStore
+		currentStorePath := activeStorePath
+		activeMu.RUnlock()
+
+		newStore := currentStore
+		storeChanged := newStorePath != currentStorePath
+		if storeChanged {
+			newStore, err = store.New(newStorePath)
+			if err != nil {
+				proxyLog.Warnf("failed to create new store during reload: %v", err)
+				return
+			}
+		}
+
+		newSrv, err := server.New(newCfg, muxLog, proxyLog, upstreamLog, perfMon, newStore, buildInfo)
 		if err != nil {
 			proxyLog.Warnf("failed to build new server during reload: %v", err)
+			if storeChanged {
+				newStore.Close()
+			}
 			return
 		}
 
 		activeMu.Lock()
 		old := activeSrv
+		oldStore := activeStore
 		activeSrv = newSrv
+		activeStore = newStore
+		activeStorePath = newStorePath
 		activeMu.Unlock()
 
 		applyLogSettings(newCfg)
 
 		if err := old.Shutdown(shutdownTimeout); err != nil {
 			proxyLog.Warnf("error shutting down old server during reload: %v", err)
+		}
+		if storeChanged {
+			if err := oldStore.Close(); err != nil {
+				proxyLog.Warnf("error closing old store during reload: %v", err)
+			}
 		}
 
 		// Notify UI after a short delay so it can refresh model state.
@@ -230,19 +267,37 @@ func main() {
 	defer watcherCancel()
 
 	if *flagWatchConfig {
-		absConfigPath, err := filepath.Abs(configPath)
-		if err != nil {
-			slog.Error("watch-config: failed to resolve config path", "error", err)
-			os.Exit(1)
-		}
 		proxyLog.Info("watching configuration for changes (poll-based, 2s interval)")
-		go func() {
-			(&configwatcher.Watcher{
-				Path:     absConfigPath,
-				Interval: configwatcher.DefaultInterval,
-				OnChange: reload,
-			}).Run(watcherCtx)
-		}()
+
+		if *flagConfig != "" {
+			absConfigPath, err := filepath.Abs(*flagConfig)
+			if err != nil {
+				slog.Error("watch-config: failed to resolve config path", "error", err)
+				os.Exit(1)
+			}
+			go func() {
+				(&configwatcher.Watcher{
+					Path:     absConfigPath,
+					Interval: configwatcher.DefaultInterval,
+					OnChange: reload,
+				}).Run(watcherCtx)
+			}()
+		}
+
+		if *flagConfigDir != "" {
+			absConfigDir, err := filepath.Abs(*flagConfigDir)
+			if err != nil {
+				slog.Error("watch-config: failed to resolve config-dir path", "error", err)
+				os.Exit(1)
+			}
+			go func() {
+				(&configwatcher.DirWatcher{
+					Path:     absConfigDir,
+					Interval: configwatcher.DefaultInterval,
+					OnChange: reload,
+				}).Run(watcherCtx)
+			}()
+		}
 	}
 
 	sigChan := make(chan os.Signal, 1)
@@ -293,6 +348,7 @@ func main() {
 
 				activeMu.RLock()
 				srv := activeSrv
+				st := activeStore
 				activeMu.RUnlock()
 
 				// Close long-lived SSE streams first so httpServer.Shutdown can
@@ -321,6 +377,9 @@ func main() {
 
 				if perfMon != nil {
 					perfMon.Stop()
+				}
+				if err := st.Close(); err != nil {
+					proxyLog.Warnf("store shutdown error: %v", err)
 				}
 
 				close(exitChan)
