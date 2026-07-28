@@ -5,10 +5,6 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-
 concurrency:
   group: sync-upstream
   cancel-in-progress: false
@@ -17,7 +13,11 @@ jobs:
   sync:
     if: github.repository == 'flyzstu/llama-swap'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      copilot-requests: write
     steps:
       - name: Checkout main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
@@ -25,45 +25,227 @@ jobs:
           fetch-depth: 0
           ref: main
 
-      - name: Update sync branch
-        id: sync
-        env:
-          SYNC_BRANCH: automation/sync-upstream
-        run: |
-          git remote add upstream https://github.com/mostlygeek/llama-swap.git
-          git fetch --no-tags upstream main
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # 6.4.0
+        with:
+          go-version-file: go.mod
 
-          if git merge-base --is-ancestor upstream/main HEAD; then
-            echo "Already up to date."
-            echo "updated=false" >> "$GITHUB_OUTPUT"
+      - name: Detect upstream update
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --no-tags \
+            https://github.com/mostlygeek/llama-swap.git \
+            "refs/heads/main:refs/remotes/upstream/main"
+          upstream_sha="$(git rev-parse refs/remotes/upstream/main)"
+          short_sha="${upstream_sha:0:12}"
+          branch="automation/upstream-${short_sha}"
+
+          {
+            echo "sha=${upstream_sha}"
+            echo "branch=${branch}"
+          } >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=Upstream main is already contained in this fork." >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git push --force origin "upstream/main:refs/heads/${SYNC_BRANCH}"
-          echo "updated=true" >> "$GITHUB_OUTPUT"
-
-      - name: Create pull request
-        if: steps.sync.outputs.updated == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN || github.token }}
-          SYNC_BRANCH: automation/sync-upstream
-        run: |
-          pr_number="$(gh pr list \
+          existing_pr="$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
-            --base main \
-            --head "$SYNC_BRANCH" \
             --state open \
-            --json number \
-            --jq '.[0].number')"
-
-          if [[ -n "$pr_number" ]]; then
-            echo "Updated existing pull request #${pr_number}."
+            --head "$branch" \
+            --json url \
+            --jq '.[0].url // ""')"
+          if [[ -n "$existing_pr" ]]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=An upstream sync pull request already exists: ${existing_pr}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          gh pr create \
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "reason=Upstream main contains new commits." >> "$GITHUB_OUTPUT"
+
+      - name: Report no update
+        if: steps.upstream.outputs.needed != 'true'
+        env:
+          REASON: ${{ steps.upstream.outputs.reason }}
+        run: echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge upstream
+        id: merge
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          BRANCH: ${{ steps.upstream.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base_sha="$(git rev-parse HEAD)"
+          git switch --create "$BRANCH"
+
+          set +e
+          git merge --no-ff --no-edit refs/remotes/upstream/main
+          merge_status=$?
+          set -e
+
+          # Fork workflows are maintained independently. Keeping the base
+          # versions also lets GITHUB_TOKEN push without workflow permission.
+          git rm -r -f --ignore-unmatch .github/workflows
+          git restore \
+            --source="$base_sha" \
+            --staged \
+            --worktree \
+            -- .github/workflows
+
+          if (( merge_status == 0 )); then
+            if ! git diff --cached --quiet; then
+              git commit --amend --no-edit
+            fi
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
+            git commit --no-edit
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "conflicts=true" >> "$GITHUB_OUTPUT"
+
+      - name: Test clean merge before using Copilot
+        id: precheck
+        if: >-
+          steps.upstream.outputs.needed == 'true' &&
+          steps.merge.outputs.conflicts != 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          make test-all
+          if git diff --name-only "${GITHUB_SHA}..HEAD" | rg -q '^ui-svelte/'; then
+            make test-ui
+          fi
+
+      - name: Set up Node.js for Copilot
+        if: >-
+          steps.upstream.outputs.needed == 'true' &&
+          (steps.merge.outputs.conflicts == 'true' ||
+          steps.precheck.outcome == 'failure')
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # 6.4.0
+        with:
+          node-version: "24"
+
+      - name: Install Copilot CLI
+        if: >-
+          steps.upstream.outputs.needed == 'true' &&
+          (steps.merge.outputs.conflicts == 'true' ||
+          steps.precheck.outcome == 'failure')
+        run: npm install --global @github/copilot
+
+      - name: Ask Copilot to resolve conflicts or test failures
+        id: copilot
+        if: >-
+          steps.upstream.outputs.needed == 'true' &&
+          (steps.merge.outputs.conflicts == 'true' ||
+          steps.precheck.outcome == 'failure')
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          copilot -p "
+          Adapt this llama-swap fork to the in-progress merge of
+          mostlygeek/llama-swap main at ${UPSTREAM_SHA}.
+
+          Resolve every Git conflict and fix all test failures. Preserve the
+          fork-specific unified Docker image implementation and behavior.
+          Prefer upstream changes outside fork-specific code. Make only the
+          minimum compatibility changes required. Do not abort the merge,
+          create commits, push, open pull requests, modify workflows, weaken
+          tests, or change unrelated behavior. Leave all resolved changes in
+          the working tree and run focused tests when useful.
+
+          解决全部 Git 冲突，只做最小兼容性修改。
+          " \
+            --allow-tool='shell(git:*)' \
+            --allow-tool='shell(go:*)' \
+            --allow-tool='shell(gofmt:*)' \
+            --allow-tool='shell(make:*)' \
+            --allow-tool='shell(npm:*)' \
+            --allow-tool='shell(rg:*)' \
+            --allow-tool=write \
+            --no-ask-user
+
+      - name: Commit Copilot adaptation
+        if: steps.copilot.outcome == 'success'
+        env:
+          BASE_SHA: ${{ github.sha }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          git rm -r -f --ignore-unmatch .github/workflows
+          git restore \
+            --source="$BASE_SHA" \
+            --staged \
+            --worktree \
+            -- .github/workflows
+
+          unmerged="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unmerged" ]]; then
+            echo "Copilot left unresolved conflicts:" >&2
+            echo "$unmerged" >&2
+            exit 1
+          fi
+
+          git add --all
+          if git rev-parse --verify --quiet MERGE_HEAD >/dev/null; then
+            git commit -m "merge: sync upstream ${UPSTREAM_SHA:0:12}"
+          elif ! git diff --cached --quiet; then
+            git commit -m "fix: adapt to upstream ${UPSTREAM_SHA:0:12}"
+          fi
+
+      - name: Validate Copilot adaptation
+        if: steps.copilot.outcome == 'success'
+        run: |
+          set -euo pipefail
+          make test-all
+          if git diff --name-only "${GITHUB_SHA}..HEAD" | rg -q '^ui-svelte/'; then
+            make test-ui
+          fi
+
+      - name: Push branch and create draft pull request
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.upstream.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          COPILOT_USED: ${{ steps.copilot.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet "${GITHUB_SHA}..HEAD" -- .github/workflows; then
+            echo "The sync branch contains forbidden workflow changes." >&2
+            git diff --stat "${GITHUB_SHA}..HEAD" -- .github/workflows >&2
+            exit 1
+          fi
+
+          git push --set-upstream origin "HEAD:$BRANCH"
+          pr_url="$(gh pr create \
+            --draft \
             --repo "$GITHUB_REPOSITORY" \
             --base main \
-            --head "$SYNC_BRANCH" \
+            --head "$BRANCH" \
             --title "ci: sync upstream main" \
-            --body "Sync \`mostlygeek/llama-swap:main\` into this fork for manual review."
+            --body "Sync \`mostlygeek/llama-swap:main\` at \`${UPSTREAM_SHA}\` into this fork.
+
+          Copilot compatibility adaptation used: \`${COPILOT_USED}\`
+
+          This pull request was generated automatically and remains a draft for manual review.")"
+          echo "Created ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
