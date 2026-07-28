@@ -1,4 +1,4 @@
-![llama-swap 头图](docs/assets/hero3.webp)
+![llama-swap 头图](docs/assets/hero4.webp)
 ![GitHub 下载量](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
 ![GitHub Actions 状态](https://img.shields.io/github/actions/workflow/status/flyzstu/llama-swap/go-ci.yml)
 ![GitHub Stars](https://img.shields.io/github/stars/flyzstu/llama-swap)
@@ -32,6 +32,7 @@ llama-swap 使用 Go 编写，注重性能和简单性。程序没有外部运�
   - `v1/rerank`、`v1/reranking`、`/rerank`
   - `/infill`：代码补全
   - `/completion`：文本补全
+  - `/props`：需要提供 `?model={model_id}` 查询参数，`autoload` 参数暂不支持，将被忽略
 - ✅ 通过 [stable-diffusion.cpp server](https://github.com/leejet/stable-diffusion.cpp/tree/master/examples/server) 支持 SDAPI：
   - `/sdapi/v1/txt2img`
   - `/sdapi/v1/img2img`
@@ -42,6 +43,8 @@ llama-swap 使用 Go 编写，注重性能和简单性。程序没有外部运�
   - `/running`：列出当前运行的模型（[#61](https://github.com/mostlygeek/llama-swap/issues/61)）
   - `POST /api/models/unload`：手动卸载所有运行中的模型（[#58](https://github.com/mostlygeek/llama-swap/issues/58)）
   - `POST /api/models/unload/:model_id`：卸载指定模型
+  - `GET /api/profiles`：列出已配置的 profile 及当前激活的选择
+  - `PUT /api/profiles/active`：激活某个 profile 或取消选择
   - `/logs`：远程日志监控
     - `GET /logs` 返回缓冲区内的纯文本日志
     - 使用 `Accept: text/html` 请求时，`/logs` 会重定向到 `/ui/`
@@ -54,6 +57,7 @@ llama-swap 使用 Go 编写，注重性能和简单性。程序没有外部运�
   - `/metrics`：提供 Prometheus 格式的系统和 GPU 指标
 - ✅ 支持 API Key，可限制 API 端点访问
 - ✅ 可扩展配置：
+  - 使用 profile 在运行时切换模型 ID 路由
   - 使用自定义 DSL 交换矩阵并发运行模型（[#643](https://github.com/mostlygeek/llama-swap/issues/643)）
   - 通过 `ttl` 在超时后自动卸载模型
   - 组合使用 `cmd` 和 `cmdStop` 管理 Docker 或 Podman 容器
@@ -268,6 +272,7 @@ models:
   - `macros`：定义可复用配置片段
 - 模型配置：
   - `ttl`：自动卸载超时模型
+  - `unloadTimeout`：调整优雅卸载的行为（手动、API 触发以及 `ttl` 超时）
   - `aliases`：使用熟悉的模型名称，例如 `gpt-4o-mini`
   - `env`：向推理服务传递环境变量
   - `cmdStop`：优雅停止 Docker 或 Podman 容器

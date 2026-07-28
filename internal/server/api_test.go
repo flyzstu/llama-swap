@@ -49,11 +49,54 @@ func TestServer_HandleListModels(t *testing.T) {
 	for _, m := range resp.Data {
 		ids[m.ID] = true
 	}
-	if !ids["visible"] || !ids["remote-model"] {
+	if !ids["visible"] || !ids["peer1/remote-model"] {
 		t.Errorf("missing expected models: %v", ids)
 	}
 	if ids["hidden"] {
 		t.Error("unlisted model should not appear")
+	}
+}
+
+func TestServer_HandleListModels_PeerNamespaces(t *testing.T) {
+	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s.cfg = config.Config{
+		Models: map[string]config.ModelConfig{"shared": {}},
+		Peers: config.PeerDictionaryConfig{
+			"cuda":  {Models: []string{"shared"}},
+			"strix": {Models: []string{"shared"}},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var resp struct {
+		Data []modelRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, model := range resp.Data {
+		ids[model.ID] = true
+	}
+	for _, id := range []string{"shared", "cuda/shared", "strix/shared"} {
+		if !ids[id] {
+			t.Errorf("missing model %q from %v", id, ids)
+		}
+	}
+	if len(ids) != 3 {
+		t.Errorf("model IDs = %v, want exactly local and two qualified peers", ids)
+	}
+
+	statusIDs := make(map[string]bool)
+	for _, model := range s.modelStatus() {
+		statusIDs[model.Id] = true
+	}
+	for _, id := range []string{"shared", "cuda/shared", "strix/shared"} {
+		if !statusIDs[id] {
+			t.Errorf("missing status model %q from %v", id, statusIDs)
+		}
 	}
 }
 
@@ -79,6 +122,50 @@ func TestServer_HandleListModels_Aliases(t *testing.T) {
 	}
 	if !ids["real"] || !ids["nick"] {
 		t.Errorf("expected alias entry; got %v", ids)
+	}
+}
+
+func TestServer_HandleListModels_Status(t *testing.T) {
+	local := newStubRouter(nil, "")
+	local.running = map[string]process.ProcessState{"loaded-model": process.StateReady}
+	s := newTestServer(local, newStubRouter(nil, ""))
+	s.cfg = config.Config{
+		IncludeAliasesInList: true,
+		Models: map[string]config.ModelConfig{
+			"loaded-model":   {Aliases: []string{"loaded-alias"}},
+			"unloaded-model": {},
+		},
+		Peers: config.PeerDictionaryConfig{
+			"peer1": {Models: []string{"remote-model"}},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var resp struct {
+		Data []modelRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	statuses := map[string]string{}
+	for _, m := range resp.Data {
+		statuses[m.ID], _ = m.Status["value"].(string)
+	}
+
+	if statuses["loaded-model"] != "loaded" {
+		t.Errorf("loaded-model status = %q, want loaded", statuses["loaded-model"])
+	}
+	if statuses["loaded-alias"] != "loaded" {
+		t.Errorf("loaded-alias status = %q, want loaded", statuses["loaded-alias"])
+	}
+	if statuses["unloaded-model"] != "unloaded" {
+		t.Errorf("unloaded-model status = %q, want unloaded", statuses["unloaded-model"])
+	}
+	if statuses["peer1/remote-model"] != "unloaded" {
+		t.Errorf("peer1/remote-model status = %q, want unloaded", statuses["peer1/remote-model"])
 	}
 }
 
@@ -141,7 +228,8 @@ func TestServer_HandleUpstream(t *testing.T) {
 	})
 }
 
-func upstreamMetricsServer(response string) *Server {
+func upstreamMetricsServer(t *testing.T, response string) *Server {
+	t.Helper()
 	cfg := config.Config{Models: map[string]config.ModelConfig{"m1": {}}}
 	proxylog := logmon.NewWriter(io.Discard)
 	s := &Server{
@@ -149,8 +237,8 @@ func upstreamMetricsServer(response string) *Server {
 		muxlog:      logmon.NewWriter(io.Discard),
 		proxylog:    proxylog,
 		upstreamlog: logmon.NewWriter(io.Discard),
-		inflight:    &inflightCounter{},
-		metrics:     newMetricsMonitor(proxylog, 10, 0),
+		inflight:    newInflightTracker(),
+		metrics:     newTestMetricsMonitor(t, proxylog, 10, 0),
 		local:       newStubRouter([]string{"m1"}, response),
 		peer:        newStubRouter(nil, ""),
 	}
@@ -245,7 +333,7 @@ func TestServer_HandleUpstream_IgnorePaths(t *testing.T) {
 
 func TestServer_HandleUpstream_MetricsRecordsSupportedPath(t *testing.T) {
 	resp := `{"usage":{"prompt_tokens":3,"completion_tokens":5}}`
-	s := upstreamMetricsServer(resp)
+	s := upstreamMetricsServer(t, resp)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/upstream/m1/v1/chat/completions", strings.NewReader(`{}`))
@@ -255,7 +343,7 @@ func TestServer_HandleUpstream_MetricsRecordsSupportedPath(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.String() != resp {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}
-	entries := s.metrics.getMetrics()
+	entries := metricsEntries(t, s.metrics)
 	if len(entries) != 1 {
 		t.Fatalf("want 1 metrics entry, got %d", len(entries))
 	}
@@ -271,7 +359,7 @@ func TestServer_HandleUpstream_MetricsRecordsSupportedPath(t *testing.T) {
 }
 
 func TestServer_HandleUpstream_MetricsSkipsUnsupportedPath(t *testing.T) {
-	s := upstreamMetricsServer("ok")
+	s := upstreamMetricsServer(t, "ok")
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/upstream/m1/probe", strings.NewReader(`{}`))
@@ -281,13 +369,13 @@ func TestServer_HandleUpstream_MetricsSkipsUnsupportedPath(t *testing.T) {
 	if w.Code != http.StatusOK || w.Body.String() != "ok" {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 	}
-	if len(s.metrics.getMetrics()) != 0 {
-		t.Errorf("want no metrics entries for unsupported path, got %d", len(s.metrics.getMetrics()))
+	if len(metricsEntries(t, s.metrics)) != 0 {
+		t.Errorf("want no metrics entries for unsupported path, got %d", len(metricsEntries(t, s.metrics)))
 	}
 }
 
 func TestServer_HandleUpstream_MetricsSkipsGET(t *testing.T) {
-	s := upstreamMetricsServer(`{"usage":{}}`)
+	s := upstreamMetricsServer(t, `{"usage":{}}`)
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/upstream/m1/v1/chat/completions", nil))
@@ -295,9 +383,98 @@ func TestServer_HandleUpstream_MetricsSkipsGET(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d", w.Code)
 	}
-	if len(s.metrics.getMetrics()) != 0 {
-		t.Errorf("want no metrics entries for GET upstream, got %d", len(s.metrics.getMetrics()))
+	if len(metricsEntries(t, s.metrics)) != 0 {
+		t.Errorf("want no metrics entries for GET upstream, got %d", len(metricsEntries(t, s.metrics)))
 	}
+}
+
+func TestServer_HandleUpstream_InflightTracksSupportedPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		method   string
+		path     string
+		wantPath string
+	}{
+		{
+			name:     "post inference",
+			method:   http.MethodPost,
+			path:     "/upstream/m1/v1/chat/completions",
+			wantPath: "/v1/chat/completions",
+		},
+		{
+			name:     "get model endpoint",
+			method:   http.MethodGet,
+			path:     "/upstream/m1/props",
+			wantPath: "/props",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := newStubRouter([]string{"m1"}, "ok")
+			var s *Server
+			var during shared.InFlightRequestsEvent
+			local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+				during = s.inflight.Current()
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("ok"))
+			}
+			s = upstreamInflightServer(t, local)
+
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`)))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+			}
+			if len(during.Requests) != 1 {
+				t.Fatalf("inflight during request = %+v, want 1 request", during)
+			}
+			entry := during.Requests[0]
+			if entry.Model != "m1" || entry.Method != tc.method || entry.ReqPath != tc.wantPath {
+				t.Errorf("inflight entry = %+v, want model=m1 method=%s path=%s", entry, tc.method, tc.wantPath)
+			}
+			if got := s.inflight.Current(); len(got.Requests) != 0 {
+				t.Errorf("inflight after request = %d, want 0", len(got.Requests))
+			}
+		})
+	}
+}
+
+func TestServer_HandleUpstream_InflightSkipsUnsupportedPath(t *testing.T) {
+	local := newStubRouter([]string{"m1"}, "ok")
+	var s *Server
+	var during shared.InFlightRequestsEvent
+	local.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		during = s.inflight.Current()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}
+	s = upstreamInflightServer(t, local)
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/upstream/m1/probe", strings.NewReader(`{}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if len(during.Requests) != 0 {
+		t.Fatalf("inflight during unsupported path = %+v, want empty", during)
+	}
+}
+
+func upstreamInflightServer(t *testing.T, local *stubRouter) *Server {
+	t.Helper()
+	cfg := config.Config{Models: map[string]config.ModelConfig{"m1": {}}}
+	proxylog := logmon.NewWriter(io.Discard)
+	s := &Server{
+		cfg:         cfg,
+		muxlog:      logmon.NewWriter(io.Discard),
+		proxylog:    proxylog,
+		upstreamlog: logmon.NewWriter(io.Discard),
+		inflight:    newInflightTracker(),
+		metrics:     newTestMetricsMonitor(t, proxylog, 10, 0),
+		local:       local,
+		peer:        newStubRouter(nil, ""),
+	}
+	s.routes()
+	return s
 }
 
 func TestServer_HandleMetrics_Unavailable(t *testing.T) {

@@ -81,6 +81,7 @@ llama-swap supports many more features to customize how you want to manage your 
 | `env`     | define environment variables per model         |
 | `aliases` | serve a model with different names             |
 | `filters` | modify requests before sending to the upstream |
+| `profiles` | switch model ID replacements at runtime       |
 | `...`     | And many more tweaks                           |
 
 ## Full Configuration Example
@@ -146,6 +147,22 @@ metricsMaxInMemory: 1000
 # - set to 0 to disable
 captureBuffer: 15
 
+# ui.activity.session_id: ordered request headers used to identify sessions in
+# the Activity page's in-flight request table.
+# - optional, default: ["X-Session-ID", "X-Litellm-Session-Id"]
+# - matching is case-insensitive; the first non-empty matching header is shown
+# - set to [] to disable session ID lookup
+ui:
+  activity:
+    session_id: ["X-Session-ID", "X-Litellm-Session-Id"]
+
+# store: persistent storage for llama-swap state
+# - optional, default: in-memory sqlite database capped by metricsMaxInMemory
+# - path is a sqlite database file path
+# - file-backed sqlite keeps activity logs across restarts
+# store:
+#   path: /path/to/file.sqlite
+
 # performance: configuration for system monitoring statistics
 # - timing values are duration strings like 1s, 1h30m, 90m, 2h10s, etc.
 performance:
@@ -183,19 +200,29 @@ includeAliasesInList: false
 # - must be >= 0
 globalTTL: 0
 
+# unloadTimeout: graceful timeout in seconds when unloading a model (manual, API, or ttl expiry)
+# - optional, default: 10
+# - used before force-killing the model process on unload
+# - can be overridden per model with model.unloadTimeout
+# - large values extend how long an unload can take when a process does not exit cleanly
+unloadTimeout: 10
+
 # macros: a dictionary of string substitutions
 # - optional, default: empty dictionary
 # - macros are reusable snippets
-# - used in a model's cmd, cmdStop, proxy, checkEndpoint, filters.stripParams
+# - global macros can be used in any configuration value
+# - model macros can be used in any value within that model
 # - useful for reducing common configuration settings
 # - macro names are strings and must be less than 64 characters
 # - macro names must match the regex ^[a-zA-Z0-9_-]+$
-# - macro names must not be a reserved name: PORT or MODEL_ID
+# - macro names must not be a reserved name: PID, PORT, or MODEL_ID
 # - macro values can be numbers, bools, or strings
 # - macros can contain other macros, but they must be defined before they are used
 # - environment variables can be referenced with ${env.VAR_NAME} syntax
 #   - env macros are substituted first, before regular macros
 #   - if the env var is not set, config loading will fail with an error
+# - ${PORT} is assigned while loading each model that uses it in cmd
+# - ${PID} is substituted when a model's cmdStop runs
 macros:
   # Example of a multi-line macro
   "latest-llama": >
@@ -224,6 +251,60 @@ apiKeys:
   # use environment variable macros to keep secrets out of the config
   - "${env.API_KEY_1}"
   - "${env.API_KEY_2}"
+
+# profiles: named model ID replacements switched at runtime through the UI or API
+# - optional, default: empty dictionary
+# - one profile or none is active; startup and configuration reload select none
+# - pins are applied before aliases, filters, and routing
+# - targets may be a local model, fully qualified peer model, alias, setParamsByID alias, or selector
+# - an empty string or YAML null (~) disables the pin with a 404; it is not
+#   added to model listings, while existing local, alias, or peer IDs remain
+profiles:
+  "coding":
+    description: "Coding-focused model routing"
+    pins:
+      "llm-code": "gpt-oss-120b"
+      "llm-plan": "qwen-unlisted"
+      "image-gen": ~
+
+# selectors: virtual model IDs resolved to concrete targets per request
+# - optional, default: empty dictionary
+# - profiles run first, so a profile pin may target a selector
+# - selector IDs cannot collide with model IDs, aliases, or fully qualified peer model names
+# - selector targets cannot be other selectors
+# - selectors are not supported on /upstream/<model> paths
+selectors:
+  # warm chooses the first ready target in order, then an already-starting
+  # target, and cold-starts the first target when none are running
+  "coding-model":
+    strategy: warm
+    targets:
+      - "gpt-oss-120b"
+      - "qwen-unlisted"
+    name: "Coding Model"
+    description: "Best currently loaded coding model"
+    metadata:
+      purpose: coding
+
+  # pin always uses the first target; remaining entries are reference data
+  "llm-plan":
+    strategy: pin
+    targets:
+      - "gpt-oss-120b"
+      - "z-ai/glm-4.7"
+
+  # spillover fills local or remote targets to the reservation count in order,
+  # starting the next target when the active targets reach that count
+  "llama":
+    strategy: spillover
+    targets:
+      - "docker-llama"
+      - "modelA"
+      - "modelB"
+    settings:
+      # requests reserved per active target before spilling over to the next target
+      # - optional, default: 1
+      spillover: 4
 
 # models: a dictionary of model configurations
 # - required
@@ -293,6 +374,11 @@ models:
     # - a ttl of 0 will mean never unload
     # - a value of 0 disables automatic unloading of the model
     ttl: 60
+
+    # unloadTimeout: graceful timeout in seconds when unloading this model (manual, API, or ttl expiry)
+    # - optional, default: global unloadTimeout
+    # - useful for slow cmdStop commands such as docker stop
+    unloadTimeout: 10
 
     # useModelName: override the model name that is sent to upstream server
     # - optional, default: ""
@@ -462,24 +548,22 @@ models:
 # A model not appearing in any set can only run alone.
 #
 matrix:
-  # vars: short names for models (alphanumeric, 1-8 chars)
-  # - required for sets and evict_costs settings
+  # vars: optional short names for models (alphanumeric, "-", or ".", 1-32 chars)
   # - each entry is a short name to a real model ID. Do not use an alias
   # - used to keep set DSL logic short and easier to read
-  # - sets and evict_costs only use identifiers defined in vars
+  # - sets and evict_costs may mix vars with real model IDs
+  # - a var takes precedence when its name is also a real model ID
   vars:
     g: gemma-model
     q: qwen-model
     m: mistral-model
     v: voxtral-model
     e: reranker-model
-    L: llama-70B
-    sd: stable-diffusion
 
   # evict_costs: relative cost of losing a running model (default: 1)
   evict_costs:
     v: 50 # vllm backend, slow cold start
-    L: 30 # 70B weights, slow to load
+    llama-70B: 30 # 70B weights, slow to load
 
   # sets: named sets of concurrent model combinations
   # Values are DSL strings with operators:
@@ -489,28 +573,28 @@ matrix:
   #   +ref  inline another set's expression
   #
   # Expansion examples:
-  #   "L"                  → [L]
+  #   "model-a"            → [model-a]
   #   "a & b"              → [a, b]
   #   "a | b"              → [a], [b]
   #   "(a | b) & c"        → [a, c], [b, c]
   #   "(a | b) & (c | d)"  → [a,c], [a,d], [b,c], [b,d]
   #   "+llms & v"          → expands llms inline, then applies & v
   sets:
-    # LLM + TTS: switching between g/q/m won't evict v
-    # expands to: [g,v], [q,v], [m,v]
-    standard: "(g | q | m) & v"
+    # LLM + TTS: vars and real model IDs may be mixed
+    # expands to: [g,v], [qwen-model,v], [m,v]
+    standard: "(g | qwen-model | m) & v"
 
     # LLM + TTS + reranker
     # expands to: [g,v,e], [q,v,e]
     with_rerank: "(g | q) & v & e"
 
     # LLM + image generation, no TTS
-    # expands to: [g,sd], [q,sd]
-    creative: "(g | q) & sd"
+    # expands to: [g,stable-diffusion], [q,stable-diffusion]
+    creative: "(g | q) & stable-diffusion"
 
     # 70B model uses all GPUs, can only run alone
-    # expands to: [L]
-    full: "L"
+    # vars are not required when using real model IDs
+    full: "llama-70B"
 
 # hooks: a dictionary of event triggers and actions
 # - optional, default: empty dictionary
@@ -532,6 +616,10 @@ hooks:
 # - optional, default empty dictionary
 # - peers can be another llama-swap
 # - peers can be any server that provides the /v1/ generative api endpoints supported by llama-swap
+# - peer models are always addressable as <peer ID>/<model ID>
+# - an unqualified model ID is accepted only when exactly one peer provides it
+# - local model IDs and aliases take precedence over unqualified peer model IDs
+# - fully qualified peer names are reserved and are the peer IDs shown by /v1/models
 peers:
   # keys is the peer'd ID
   llama-swap-peer:

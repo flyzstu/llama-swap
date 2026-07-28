@@ -1,6 +1,7 @@
 export type ConnectionState = "connected" | "connecting" | "disconnected";
 
 export type ModelStatus = "ready" | "starting" | "stopping" | "stopped" | "shutdown" | "unknown";
+export type PlaygroundModelType = "model" | "peer" | "selector" | "profile";
 
 export interface ModelCapabilities {
   vision?: boolean;
@@ -19,8 +20,20 @@ export interface Model {
   description: string;
   unlisted: boolean;
   peerID: string;
+  playgroundType?: PlaygroundModelType;
   aliases?: string[];
   capabilities?: ModelCapabilities;
+}
+
+export interface Profile {
+  id: string;
+  description: string;
+  pins: Record<string, string>;
+}
+
+export interface ProfileState {
+  active: string | null;
+  profiles: Profile[];
 }
 
 export interface TokenMetrics {
@@ -47,6 +60,14 @@ export interface ActivityLogEntry {
   metadata?: Record<string, string>;
 }
 
+export interface ActivityPage {
+  data: ActivityLogEntry[];
+  page: number;
+  limit: number;
+  total: number;
+  total_pages: number;
+}
+
 export interface ReqRespCapture {
   id: number;
   req_path: string;
@@ -61,8 +82,32 @@ export interface LogData {
   data: string;
 }
 
+export interface InflightRequestEntry {
+  id: string;
+  timestamp: string;
+  model: string;
+  req_path: string;
+  method: string;
+  req_headers: Record<string, string>;
+  remote_ip: string;
+  resp_headers: Record<string, string>;
+  resp_bytes: number;
+  elapsed_ms: number;
+  client_received_at_ms?: number;
+  metadata?: Record<string, string>;
+}
+
 export interface InFlightStats {
-  total: number;
+  operation: "snapshot" | "upsert" | "remove";
+  requests?: InflightRequestEntry[];
+  request?: InflightRequestEntry;
+  id?: string;
+}
+
+export interface UIConfig {
+  activity: {
+    session_id: string[];
+  };
 }
 
 export interface NetIOStat {
@@ -106,7 +151,7 @@ export interface PerformanceResponse {
 }
 
 export interface APIEventEnvelope {
-  type: "modelStatus" | "logData" | "metrics" | "inflight" | "perfsys" | "perfgpu";
+  type: "modelStatus" | "logData" | "activity" | "inflight" | "uiConfig" | "profileChanged" | "perfsys" | "perfgpu";
   data: string;
 }
 
@@ -118,6 +163,15 @@ export interface HistogramData {
   p99: number;
   p95: number;
   p50: number;
+}
+
+export interface ActivityStatsData {
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_tokens: number;
+  prompt_histogram: HistogramData | null;
+  gen_histogram: HistogramData | null;
 }
 
 export interface VersionInfo {

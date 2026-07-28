@@ -5,8 +5,15 @@ set -e
 
 COMMIT_HASH="${1:-master}"
 BACKEND="${BACKEND:-cuda}"
+WHISPER_FFMPEG="${WHISPER_FFMPEG:-yes}"
 
 mkdir -p /install/bin /install/lib
+
+if [[ "${WHISPER_FFMPEG,,}" == "yes" || "${WHISPER_FFMPEG,,}" == "true" ]]; then
+    WHISPER_FFMPEG_ENABLED=1
+else
+    WHISPER_FFMPEG_ENABLED=0
+fi
 
 # Clone and checkout (init-based so cache-mounted /src/whisper.cpp/build dir doesn't break clone)
 echo "=== Cloning whisper.cpp at ${COMMIT_HASH} ==="
@@ -39,6 +46,10 @@ CMAKE_FLAGS+=(
     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/lib64/stubs -lcuda"
     "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/lib64/stubs -lcuda"
 )
+
+if [ "$WHISPER_FFMPEG_ENABLED" -eq 1 ]; then
+    CMAKE_FLAGS+=(-DWHISPER_FFMPEG=ON)
+fi
 
 TARGETS=(whisper-cli whisper-server)
 
