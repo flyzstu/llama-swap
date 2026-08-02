@@ -144,12 +144,24 @@ if [[ ! -z "$DEBUG_ABORT_BUILD" ]]; then
     exit 0
 fi
 
-# cpu is the only backend with a multi-arch upstream base
-# (ghcr.io/ggml-org/llama.cpp:server-bXXXX ships amd64+arm64); GPU backends
-# are amd64-only and stay on the original `docker build` path so the
-# sd-server layer can still FROM the just-built image via the local
-# dockerd image store (buildx's container driver has a separate store
-# that doesn't share with dockerd, which breaks the sd build).
+# cpu: multi-arch buildx (amd64+arm64 upstream base).
+# GPU with sd-server (musa, vulkan): classic docker build so the sd-server
+#   Containerfile can FROM the just-built image via the local dockerd store
+#   (buildx's container driver has a separate store that doesn't share with
+#   dockerd, which breaks the sd build).
+# GPU without sd-server (cuda, cuda13, intel, rocm): buildx --push to avoid
+#   cross-org blob mount failures on GHCR. When docker build + docker push is
+#   used, Docker attempts to cross-mount base-image layers from the upstream
+#   org (e.g. ggml-org) into the fork's namespace. GHCR silently rejects these
+#   cross-org mounts, leaving layers stuck in "Preparing" and causing the
+#   manifest push to fail with "unknown blob".
+
+# Determine if this arch layers stable-diffusion.cpp on top.
+HAS_SD_SERVER=false
+case "$ARCH" in
+    "musa" | "vulkan") HAS_SD_SERVER=true ;;
+esac
+
 if [ "$ARCH" == "cpu" ]; then
     if [ "$PUSH_IMAGES" == "true" ]; then
         BUILDX_FLAGS="--push --platform linux/amd64,linux/arm64"
@@ -160,6 +172,14 @@ if [ "$ARCH" == "cpu" ]; then
         # and a regression in either fails CI — without materializing the
         # image or needing to --load (which is multi-arch-incompatible).
         BUILDX_FLAGS="--platform linux/amd64,linux/arm64"
+    fi
+elif [ "$HAS_SD_SERVER" == "false" ]; then
+    # Single-arch GPU builds without sd-server: use buildx so layers are
+    # pushed directly, bypassing the cross-org blob mount path.
+    if [ "$PUSH_IMAGES" == "true" ]; then
+        GPU_BUILDX_FLAGS="--push --platform linux/amd64"
+    else
+        GPU_BUILDX_FLAGS="--platform linux/amd64"
     fi
 fi
 
@@ -186,6 +206,13 @@ for CONTAINER_TYPE in non-root root; do
       --build-arg LS_REPO=${LS_BINARY_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} \
       --build-arg BASE_IMAGE=${BASE_IMAGE} \
       -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} .
+  elif [ "$HAS_SD_SERVER" == "false" ]; then
+    docker buildx build $GPU_BUILDX_FLAGS --provenance=false \
+      -f llama-swap.Containerfile \
+      --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
+      --build-arg LS_REPO=${LS_BINARY_REPO} --build-arg GID=${USER_GID} --build-arg USER_HOME=${USER_HOME} \
+      --build-arg BASE_IMAGE=${BASE_IMAGE} \
+      -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} .
   else
     docker build --provenance=false -f llama-swap.Containerfile \
       --build-arg BASE_TAG=${BASE_TAG} --build-arg LS_VER=${LS_VER} --build-arg UID=${USER_UID} \
@@ -206,8 +233,9 @@ for CONTAINER_TYPE in non-root root; do
         -t ${CONTAINER_TAG} -t ${CONTAINER_LATEST} . ;;
   esac
 
-  # cpu builds push inline via buildx --push; all other archs push here.
-  if [ "$ARCH" != "cpu" ] && [ "$PUSH_IMAGES" == "true" ]; then
+  # cpu and GPU-without-sd builds push inline via buildx --push above.
+  # Only SD-server archs (musa, vulkan) still use a separate docker push.
+  if [ "$HAS_SD_SERVER" == "true" ] && [ "$PUSH_IMAGES" == "true" ]; then
     docker push ${CONTAINER_TAG}
     docker push ${CONTAINER_LATEST}
   fi
