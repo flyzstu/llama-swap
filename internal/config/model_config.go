@@ -9,12 +9,17 @@ import (
 const (
 	MODEL_CONFIG_DEFAULT_TTL   = -1
 	MODEL_CONFIG_DEFAULT_PROXY = "http://localhost:${PORT}"
+	comfyUIConcurrencyLimit    = 50
+
+	// ComfyUIModelID identifies the model used by the /comfyui endpoint.
+	ComfyUIModelID = "comfyui_auto"
 )
 
 var validModalities = map[string]struct{}{
 	"text":  {},
 	"audio": {},
 	"image": {},
+	"video": {},
 }
 
 // ModelCapConfig defines what modalities and features a model supports.
@@ -38,12 +43,12 @@ func (c ModelCapConfig) Empty() bool {
 func (c ModelCapConfig) Validate() error {
 	for _, m := range c.In {
 		if _, ok := validModalities[m]; !ok {
-			return fmt.Errorf("capabilities.in: invalid modality %q, must be one of: text, audio, image", m)
+			return fmt.Errorf("capabilities.in: invalid modality %q, must be one of: text, audio, image, video", m)
 		}
 	}
 	for _, m := range c.Out {
 		if _, ok := validModalities[m]; !ok {
-			return fmt.Errorf("capabilities.out: invalid modality %q, must be one of: text, audio, image", m)
+			return fmt.Errorf("capabilities.out: invalid modality %q, must be one of: text, audio, image, video", m)
 		}
 	}
 	if c.Context < 0 {
@@ -61,6 +66,13 @@ type TimeoutsConfig struct {
 	TLSHandshake   int `yaml:"tlsHandshake"`
 	ExpectContinue int `yaml:"expectContinue"`
 	IdleConn       int `yaml:"idleConn"`
+}
+
+// CompatConfig holds compatibility settings for upstream applications.
+type CompatConfig struct {
+	// IgnoreWebsockets prevents websocket connections from participating in
+	// model lifecycle activity such as swapping, concurrency, and TTL tracking.
+	IgnoreWebsockets bool `yaml:"ignoreWebsockets"`
 }
 
 type ModelConfig struct {
@@ -98,6 +110,9 @@ type ModelConfig struct {
 
 	// Timeout settings for proxy connections
 	Timeouts TimeoutsConfig `yaml:"timeouts"`
+
+	// Compatibility settings for upstream applications.
+	Compat CompatConfig `yaml:"compat"`
 
 	// Capabilities defines what modalities and features the model supports.
 	Capabilities ModelCapConfig `yaml:"capabilities"`
