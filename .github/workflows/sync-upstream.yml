@@ -17,7 +17,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      copilot-requests: write
     steps:
       - name: Checkout main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
@@ -119,7 +118,7 @@ jobs:
 
           echo "conflicts=true" >> "$GITHUB_OUTPUT"
 
-      - name: Test clean merge before using Copilot
+      - name: Test clean merge before using opencode
         id: precheck
         if: >-
           steps.upstream.outputs.needed == 'true' &&
@@ -132,7 +131,7 @@ jobs:
             make test-ui
           fi
 
-      - name: Set up Node.js for Copilot
+      - name: Set up Node.js for opencode
         if: >-
           steps.upstream.outputs.needed == 'true' &&
           (steps.merge.outputs.conflicts == 'true' ||
@@ -141,25 +140,26 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Install Copilot CLI
+      - name: Install opencode
         if: >-
           steps.upstream.outputs.needed == 'true' &&
           (steps.merge.outputs.conflicts == 'true' ||
           steps.precheck.outcome == 'failure')
-        run: npm install --global @github/copilot
+        run: npm install --global opencode-ai
 
-      - name: Ask Copilot to resolve conflicts or test failures
-        id: copilot
+      - name: Run opencode to resolve conflicts or test failures
+        id: opencode
         if: >-
           steps.upstream.outputs.needed == 'true' &&
           (steps.merge.outputs.conflicts == 'true' ||
           steps.precheck.outcome == 'failure')
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          OPENCODE_ZEN_API_KEY: ${{ secrets.OPENCODE_ZEN_API_KEY }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          copilot -p "
+          opencode run --model opencode/big-pickle --auto "
           Adapt this llama-swap fork to the in-progress merge of
           mostlygeek/llama-swap main at ${UPSTREAM_SHA}.
 
@@ -172,18 +172,10 @@ jobs:
           the working tree and run focused tests when useful.
 
           解决全部 Git 冲突，只做最小兼容性修改。
-          " \
-            --allow-tool='shell(git:*)' \
-            --allow-tool='shell(go:*)' \
-            --allow-tool='shell(gofmt:*)' \
-            --allow-tool='shell(make:*)' \
-            --allow-tool='shell(npm:*)' \
-            --allow-tool='shell(rg:*)' \
-            --allow-tool=write \
-            --no-ask-user
+          "
 
-      - name: Commit Copilot adaptation
-        if: steps.copilot.outcome == 'success'
+      - name: Commit opencode adaptation
+        if: steps.opencode.outcome == 'success'
         env:
           BASE_SHA: ${{ github.sha }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
@@ -199,7 +191,7 @@ jobs:
 
           unmerged="$(git diff --name-only --diff-filter=U)"
           if [[ -n "$unmerged" ]]; then
-            echo "Copilot left unresolved conflicts:" >&2
+            echo "opencode left unresolved conflicts:" >&2
             echo "$unmerged" >&2
             exit 1
           fi
@@ -211,8 +203,8 @@ jobs:
             git commit -m "fix: adapt to upstream ${UPSTREAM_SHA:0:12}"
           fi
 
-      - name: Validate Copilot adaptation
-        if: steps.copilot.outcome == 'success'
+      - name: Validate opencode adaptation
+        if: steps.opencode.outcome == 'success'
         run: |
           set -euo pipefail
           make test-all
@@ -226,7 +218,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.upstream.outputs.branch }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
-          COPILOT_USED: ${{ steps.copilot.outcome == 'success' }}
+          OPENCODE_USED: ${{ steps.opencode.outcome == 'success' }}
         run: |
           set -euo pipefail
 
@@ -245,7 +237,7 @@ jobs:
             --title "ci: sync upstream main" \
             --body "Sync \`mostlygeek/llama-swap:main\` at \`${UPSTREAM_SHA}\` into this fork.
 
-          Copilot compatibility adaptation used: \`${COPILOT_USED}\`
+          opencode compatibility adaptation used: \`${OPENCODE_USED}\`
 
           This pull request was generated automatically and remains a draft for manual review.")"
           echo "Created ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
