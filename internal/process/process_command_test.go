@@ -174,8 +174,8 @@ func TestProcessCommand_StartStop(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("before start: expected 503, got %d", rr.Code)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "llama-swap-error") {
-		t.Errorf("before start: expected body to contain %q, got %q", "llama-swap-error", body)
+	if body := rr.Body.String(); !strings.Contains(body, `"src":"llama-swap"`) || !strings.Contains(body, "process is not ready") {
+		t.Errorf("before start: expected llama-swap error envelope, got %q", body)
 	}
 
 	runErr := runAsync(t, p)
@@ -213,8 +213,8 @@ func TestProcessCommand_StartStop(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("after stop: expected 503, got %d", rr.Code)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "llama-swap-error") {
-		t.Errorf("after stop: expected body to contain %q, got %q", "llama-swap-error", body)
+	if body := rr.Body.String(); !strings.Contains(body, `"src":"llama-swap"`) || !strings.Contains(body, "process is not ready") {
+		t.Errorf("after stop: expected llama-swap error envelope, got %q", body)
 	}
 }
 
@@ -644,6 +644,71 @@ func TestProcessCommand_TTL_ResetsOnRequest(t *testing.T) {
 	case <-runErr:
 	case <-time.After(testReturnTimeout):
 		t.Fatal("Run() did not return after Stop")
+	}
+}
+
+func TestProcessCommand_TTL_IgnoresWebsocket(t *testing.T) {
+	skipIfNoSimpleResponder(t)
+
+	websocketStarted := make(chan struct{})
+	releaseWebsocket := make(chan struct{})
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		close(websocketStarted)
+		<-releaseWebsocket
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mock.Close)
+
+	cmd, _ := simpleResponderCmd(t, "-silent")
+	p := newProcessCommand(t, config.ModelConfig{
+		Cmd:                cmd,
+		Proxy:              mock.URL,
+		CheckEndpoint:      "/health",
+		HealthCheckTimeout: 10,
+		UnloadAfter:        1,
+		UnloadTimeout:      1,
+		Compat:             config.CompatConfig{IgnoreWebsockets: true},
+	})
+	runErr := runAsync(t, p)
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		r := httptest.NewRequest(http.MethodGet, "/socket", nil)
+		r.Header.Set("Connection", "Upgrade")
+		r.Header.Set("Upgrade", "websocket")
+		p.ServeHTTP(httptest.NewRecorder(), r)
+	}()
+
+	select {
+	case <-websocketStarted:
+	case <-time.After(testReturnTimeout):
+		t.Fatal("websocket request did not reach upstream")
+	}
+	waitForState(t, p, StateStopped)
+	select {
+	case <-requestDone:
+		t.Fatal("websocket request completed before it was released")
+	default:
+	}
+
+	close(releaseWebsocket)
+	select {
+	case <-requestDone:
+	case <-time.After(testReturnTimeout):
+		t.Fatal("websocket request did not finish after release")
+	}
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() after TTL stop: %v", err)
+		}
+	case <-time.After(testReturnTimeout):
+		t.Fatal("Run() did not return after TTL stop")
 	}
 }
 

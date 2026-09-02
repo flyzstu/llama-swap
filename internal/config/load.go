@@ -128,6 +128,12 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 	for _, modelId := range modelIds {
 		modelConfig := config.Models[modelId]
 		modelConfig.HealthCheckTimeout = config.HealthCheckTimeout
+		if modelId == ComfyUIModelID {
+			if modelConfig.ConcurrencyLimit < comfyUIConcurrencyLimit {
+				modelConfig.ConcurrencyLimit = comfyUIConcurrencyLimit
+			}
+			modelConfig.Compat.IgnoreWebsockets = true
+		}
 
 		// set model TTL to globalTTL it is the default value
 		if modelConfig.UnloadAfter == MODEL_CONFIG_DEFAULT_TTL {
@@ -323,6 +329,11 @@ func validateProfiles(config Config) error {
 				}
 				return fmt.Errorf("profiles.%s.pins.%s references unknown model %q", profileName, pin, target)
 			}
+		}
+	}
+	if profile := config.Hooks.OnStartup.Profile; profile != "" {
+		if _, found := config.Profiles[profile]; !found {
+			return fmt.Errorf("hooks.on_startup.profile references unknown profile %q", profile)
 		}
 	}
 	return nil
