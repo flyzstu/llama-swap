@@ -49,9 +49,16 @@ if [[ ! "$SPARK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 # Builder image must match the base image's CUDA major version.
+# CUDA 13 dropped compute_60/61, so cuda13 needs the newer arch list.
 case "$ARCH" in
-  cuda)   CUDA_BUILDER_IMAGE=${CUDA_BUILDER_IMAGE:-nvidia/cuda:12.9.1-devel-ubuntu24.04} ;;
-  cuda13) CUDA_BUILDER_IMAGE=${CUDA_BUILDER_IMAGE:-nvidia/cuda:13.0.2-devel-ubuntu24.04} ;;
+  cuda)
+    CUDA_BUILDER_IMAGE=${CUDA_BUILDER_IMAGE:-nvidia/cuda:12.9.1-devel-ubuntu24.04}
+    CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES:-"60;61;75;86;89"}
+    ;;
+  cuda13)
+    CUDA_BUILDER_IMAGE=${CUDA_BUILDER_IMAGE:-nvidia/cuda:13.0.2-devel-ubuntu24.04}
+    CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES:-"75;80;86;89;90;100;110;120"}
+    ;;
 esac
 
 LS_REPO=${GITHUB_REPOSITORY:-mostlygeek/llama-swap}
@@ -148,6 +155,7 @@ for CONTAINER_TYPE in non-root root; do
     --build-arg BASE="${BASE}" \
     --build-arg CUDA_BUILDER_IMAGE="${CUDA_BUILDER_IMAGE}" \
     --build-arg SPARK_COMMIT="${SPARK_COMMIT}" \
+    --build-arg CMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES}" \
     --build-arg UID=${USER_UID} \
     --build-arg GID=${USER_GID} \
     -t "${SPARK_TAG}" -t "${SPARK_LATEST}" .

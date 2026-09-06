@@ -19,6 +19,8 @@ ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
 FROM ${CUDA_BUILDER_IMAGE} AS spark-builder
 
 ARG SPARK_COMMIT=4a3635c32fc9f044c2bde9ebeabf50c7e1ec5991
+# CUDA 12 keeps the legacy arch list. CUDA 13 dropped compute_60/61,
+# so it needs the newer list (overridden per-arch by build-spark.sh).
 ARG CMAKE_CUDA_ARCHITECTURES="60;61;75;86;89"
 
 ENV DEBIAN_FRONTEND=noninteractive
