@@ -18,6 +18,11 @@ on:
         description: "XHToken/llama.cpp full commit SHA for the -spark variant (default: pinned in build-spark.sh)"
         required: false
         default: ""
+      push_images:
+        description: "Push images to ghcr.io (default false for manual runs; schedule always pushes)"
+        type: boolean
+        required: false
+        default: false
 
   # Run on workflow file changes (without pushing)
   push:
@@ -78,7 +83,7 @@ jobs:
       - name: Run build-container
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./docker/build-container.sh ${{ matrix.platform }} ${{ github.event_name != 'push' }}
+        run: ./docker/build-container.sh ${{ matrix.platform }} ${{ github.event_name == 'schedule' || inputs.push_images == true }}
 
   # -spark variant: stock :cuda/:cuda13 image plus XHToken/llama.cpp
   # llama-server as /app/llama-server-spark (spark2_5 architecture).
@@ -122,7 +127,7 @@ jobs:
           SPARK_COMMIT: ${{ inputs.spark_commit }}
         run: |
           chmod +x docker/build-spark.sh
-          ./docker/build-spark.sh ${{ matrix.platform }} ${{ github.event_name != 'push' }}
+          ./docker/build-spark.sh ${{ matrix.platform }} ${{ github.event_name == 'schedule' || inputs.push_images == true }}
 
   # actions/delete-package-versions can't see manifest lists: pushing
   # a multi-arch image with `docker buildx --push` creates a tagged OCI
