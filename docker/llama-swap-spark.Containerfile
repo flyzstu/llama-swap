@@ -43,6 +43,7 @@ RUN cmake -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DLLAMA_BUILD_TESTS=OFF \
         -DGGML_CUDA=ON \
+        -DGGML_CUDA_NCCL=OFF \
         -DGGML_VULKAN=OFF \
         "-DCMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}" \
         "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler" \
