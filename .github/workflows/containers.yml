@@ -18,6 +18,10 @@ on:
         description: "XHToken/llama.cpp full commit SHA for the -spark variant (default: pinned in build-spark.sh)"
         required: false
         default: ""
+      turbo_commit:
+        description: "TheTom/llama-cpp-turboquant full commit SHA for the -turbo variant (default: pinned in build-turbo.sh)"
+        required: false
+        default: ""
       push_images:
         description: "Push images to ghcr.io (default false for manual runs; schedule always pushes)"
         type: boolean
@@ -30,6 +34,7 @@ on:
       - '.github/workflows/containers.yml'
       - 'docker/build-container.sh'
       - 'docker/build-spark.sh'
+      - 'docker/build-turbo.sh'
       - 'docker/*.Containerfile'
 
 # grant permissions on GITHUB_TOKEN to publish packages
@@ -129,6 +134,51 @@ jobs:
           chmod +x docker/build-spark.sh
           ./docker/build-spark.sh ${{ matrix.platform }} ${{ github.event_name == 'schedule' || inputs.push_images == true }}
 
+  # -turbo variant: stock :cuda/:cuda13 image plus
+  # TheTom/llama-cpp-turboquant llama-server as /app/llama-server-turbo
+  # (TurboQuant KV-cache compression + MTP speculative decoding).
+  # Runs after build-and-push so it can layer on the just-pushed base.
+  build-and-push-turbo:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [cuda, cuda13]
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 6.0.2
+
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+          echo "After cleanup:"
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd #v4.0.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 #v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run build-turbo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TURBO_COMMIT: ${{ inputs.turbo_commit }}
+        run: |
+          chmod +x docker/build-turbo.sh
+          ./docker/build-turbo.sh ${{ matrix.platform }} ${{ github.event_name == 'schedule' || inputs.push_images == true }}
+
   # actions/delete-package-versions can't see manifest lists: pushing
   # a multi-arch image with `docker buildx --push` creates a tagged OCI
   # index plus one untagged per-platform manifest per arch, and
@@ -137,7 +187,7 @@ jobs:
   # the referenced digest. dataaxiom/ghcr-cleanup-action walks tagged
   # manifest lists and excludes their children from deletion.
   delete-untagged-containers:
-    needs: [build-and-push, build-and-push-spark]
+    needs: [build-and-push, build-and-push-spark, build-and-push-turbo]
     # Skip on forks — the delete API requires package-admin on the
     # upstream account and would otherwise red-x every fork CI run.
     if: github.repository == 'flyzstu/llama-swap'
