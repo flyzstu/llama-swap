@@ -28,15 +28,6 @@ on:
         required: false
         default: false
 
-  # Run on workflow file changes (without pushing)
-  push:
-    paths:
-      - '.github/workflows/containers.yml'
-      - 'docker/build-container.sh'
-      - 'docker/build-spark.sh'
-      - 'docker/build-turbo.sh'
-      - 'docker/*.Containerfile'
-
 # grant permissions on GITHUB_TOKEN to publish packages
 # ref: https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions#publishing-a-package-using-an-action
 permissions:
