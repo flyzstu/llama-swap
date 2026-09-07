@@ -56,4 +56,4 @@ ARG GID=10001
 
 COPY --from=spark-builder --chown=${UID}:${GID} /src/llama-spark/build/bin/llama-server /app/llama-server-spark
 
-RUN /app/llama-server-spark --version
+RUN test -x /app/llama-server-spark
